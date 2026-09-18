@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Шахматный дурак — Уникальная настольная игра</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-group">
+                <span class="logo-icon">♟️</span>
+                <div class="logo-text">
+                    <h1>Шахматный Дурак</h1>
+                    <span class="logo-sub">Смесь карточного дурака и классических шахмат</span>
+                </div>
+            </div>
+            
+            <div class="header-controls">
+                <button id="rulesBtn" class="btn btn-secondary" title="Правила игры">
+                    <span class="btn-icon">📜</span> Правила
+                </button>
+                <button id="soundToggleBtn" class="btn btn-icon-only" title="Вкл/Выкл звук">
+                    <span id="soundIcon">🔊</span>
+                </button>
+                <button id="flipBoardBtn" class="btn btn-secondary" title="Перевернуть доску">
+                    <span class="btn-icon">🔄</span> Доска
+                </button>
+                <button id="newGameBtn" class="btn btn-primary" title="Начать новую партию">
+                    <span class="btn-icon">✨</span> Новая игра
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <main class="game-layout">
+            <!-- Left Column: Players & Deck -->
+            <aside class="sidebar left-sidebar">
+                <!-- Top Player (Black by default) -->
+                <div class="player-card" id="topPlayerCard">
+                    <div class="player-header">
+                        <div class="player-avatar black-avatar" id="topPlayerAvatar">♚</div>
+                        <div class="player-info">
+                            <div class="player-name" id="topPlayerName">Чёрные</div>
+                            <div class="player-status" id="topPlayerStatus">Ожидание хода</div>
+                        </div>
+                    </div>
+
+                    <!-- Top Player Reserve -->
+                    <div class="reserve-container">
+                        <div class="reserve-title">
+                            <span>Резерв</span>
+                            <span class="reserve-count" id="topReserveCount">0</span>
+                        </div>
+                        <div class="reserve-slots" id="topReserveSlots">
+                            <span class="empty-reserve-hint">Пусто</span>
+                        </div>
+                    </div>
+
+                    <!-- Top Player Captures -->
+                    <div class="captures-container">
+                        <div class="captures-title">Взятые фигуры:</div>
+                        <div class="captures-list" id="topCapturesList"></div>
+                    </div>
+                </div>
+
+                <!-- Deck (Bank) Center Display -->
+                <div class="deck-visual" title="Колода банка (выдаёт фигуру при потере)">
+                    <div class="deck-card-layer layer-3"></div>
+                    <div class="deck-card-layer layer-2"></div>
+                    <div class="deck-card-main">
+                        <div class="deck-card-inner">
+                            <span class="deck-suit-icon">♠♥♦♣</span>
+                            <span class="deck-counter" id="deckCounter">46</span>
+                            <span class="deck-label">в банке</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bottom Player (White by default) -->
+                <div class="player-card active-turn" id="bottomPlayerCard">
+                    <div class="player-header">
+                        <div class="player-avatar white-avatar" id="bottomPlayerAvatar">♔</div>
+                        <div class="player-info">
+                            <div class="player-name" id="bottomPlayerName">Белые</div>
+                            <div class="player-status" id="bottomPlayerStatus">Ваш ход</div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Player Reserve -->
+                    <div class="reserve-container">
+                        <div class="reserve-title">
+                            <span>Резерв</span>
+                            <span class="reserve-count" id="bottomReserveCount">0</span>
+                        </div>
+                        <div class="reserve-slots" id="bottomReserveSlots">
+                            <span class="empty-reserve-hint">Пусто</span>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Player Captures -->
+                    <div class="captures-container">
+                        <div class="captures-title">Взятые фигуры:</div>
+                        <div class="captures-list" id="bottomCapturesList"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center: Chess Board -->
+            <section class="board-wrapper">
+                <div class="board-container" id="boardContainer">
+                    <!-- Top Corner Blank -->
+                    <div class="coord-corner"></div>
+
+                    <!-- Top Files Coordinates (a..h) -->
+                    <div class="coord-files coord-files-top" id="filesTop">
+                        <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
+                    </div>
+
+                    <!-- Top Corner Blank -->
+                    <div class="coord-corner"></div>
+
+                    <!-- Left Ranks Coordinates (8..1) -->
+                    <div class="coord-ranks coord-ranks-left" id="ranksLeft">
+                        <span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span>
+                    </div>
+
+                    <!-- Chess Board Grid -->
+                    <div class="chess-board" id="chessBoard"></div>
+
+                    <!-- Right Ranks Coordinates (8..1) -->
+                    <div class="coord-ranks coord-ranks-right" id="ranksRight">
+                        <span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span>
+                    </div>
+
+                    <!-- Bottom Corner Blank -->
+                    <div class="coord-corner"></div>
+
+                    <!-- Bottom Files Coordinates (a..h) -->
+                    <div class="coord-files coord-files-bottom" id="filesBottom">
+                        <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
+                    </div>
+
+                    <!-- Bottom Corner Blank -->
+                    <div class="coord-corner"></div>
+                </div>
+                <div class="board-status-banner" id="boardStatusBanner">
+                    <span id="bannerText">Ход Белых</span>
+                </div>
+            </section>
+
+            <!-- Right Column: Settings, Log & Info -->
+            <aside class="sidebar right-sidebar">
+                <!-- Game Mode Selector -->
+                <div class="panel-card mode-card">
+                    <h3 class="panel-title">Режим игры</h3>
+                    <div class="mode-buttons">
+                        <button class="mode-btn active" id="modeHotseatBtn" data-mode="hotseat">
+                            <span class="mode-icon">👥</span> 2 Игрока (Экран)
+                        </button>
+                        <button class="mode-btn" id="modeAiBtn" data-mode="ai">
+                            <span class="mode-icon">🤖</span> Игра против ИИ
+                        </button>
+                        <button class="mode-btn" id="modeTutorialBtn" data-mode="tutorial">
+                            <span class="mode-icon">🎓</span> Обучение
+                        </button>
+                    </div>
+
+                    <div class="ai-active-status" id="aiActiveStatus" style="display: none;">
+                        <span class="ai-status-tag" id="aiStatusTag">🤖 ИИ: Гроссмейстер (Белые)</span>
+                        <button class="btn-text-action" id="changeAiSettingsBtn">⚙️ Настроить</button>
+                    </div>
+                </div>
+
+                <!-- Tutorial Assistant Card (visible in tutorial mode) -->
+                <div class="panel-card tutorial-card" id="tutorialCard" style="display: none;">
+                    <div class="tutorial-header">
+                        <span class="tutorial-badge">🎓 Режим обучения</span>
+                        <button class="btn-text-action" id="openTutorialLessonsBtn">📖 Уроки</button>
+                    </div>
+                    <div class="tutorial-tip-box" id="tutorialTipBox">
+                        <p id="tutorialTipText">💡 Наведите на свою фигуру, чтобы подсветить доступные для взятия фигуры соперника той же масти!</p>
+                    </div>
+                    <div class="tutorial-actions">
+                        <button class="btn btn-secondary btn-sm" id="tutorialHintBtn" title="Показать лучший ход">
+                            💡 Подсказка
+                        </button>
+                        <button class="btn btn-secondary btn-sm" id="tutorialUndoBtn" title="Отменить ход">
+                            ↩ Назад
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Move History -->
+                <div class="panel-card history-card">
+                    <h3 class="panel-title">История ходов</h3>
+                    <div class="history-table-container">
+                        <table class="history-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Белые</th>
+                                    <th>Чёрные</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historyTableBody">
+                                <!-- Dynamic moves -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Rules Modal -->
+        <div class="modal-overlay" id="rulesModal">
+            <div class="modal-card">
+                <div class="modal-header">
+                    <h2>📜 Правила игры «Шахматный дурак»</h2>
+                    <button class="modal-close" id="closeRulesBtn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="rules-section">
+                        <h3>1. Состав и раздача</h3>
+                        <p>
+                            • В начале партии у игроков есть только <strong>Короли</strong> на позициях <code>e1</code> и <code>e8</code>.<br>
+                            • Выбирается случайное число от <strong>7 до 51</strong>, и обоим игрокам раздаётся по 7 случайных фигур со случайными мастями, <strong>суммарная ценность которых равна этому числу</strong>.<br>
+                            • Ценность фигур: <em>Пешка — 1, Конь и Слон — 3, Ладья — 5, Ферзь — 9</em>.<br>
+                            • Банк состоит из <strong>60 фигур</strong> (4 масти × 15 фигур: 8 пешек, 2 коня, 2 слона, 2 ладьи, 1 ферзь).
+                        </p>
+                    </div>
+
+                    <div class="rules-section">
+                        <h3>2. Правило взятий и Превращение пешки</h3>
+                        <p>
+                            • Фигуры двигаются по стандартным шахматным правилам.<br>
+                            • <strong>Главное правило:</strong> фигура может срубить фигуру соперника <strong>только той же масти</strong> (♠ рубит ♠, ♥ рубит ♥ и т.д.).<br>
+                            • Фигура другой масти не может быть взята и преграждает путь линейным фигурам.<br>
+                            • <strong>Король универсален:</strong> король не имеет масти и может атаковать любую незащищённую фигуру.<br>
+                            • <strong>Превращение пешки:</strong> если пешка любой масти доходит до последней горизонтали, она заменяется на <strong>любую более сильную фигуру</strong> (ферзь, ладья, слон, конь) <strong>любой масти</strong> (пики, крести, черви, бубни) по выбору игрока!
+                        </p>
+                    </div>
+
+                    <div class="rules-section">
+                        <h3>3. Шах, Мат и Троекратное повторение</h3>
+                        <p>
+                            • <strong>Любая фигура</strong> любой масти может объявить шах королю соперника!<br>
+                            • Цель игры — поставить <strong>мат</strong> королю противника.<br>
+                            • <strong>Троекратное повторение позиции:</strong><br>
+                            &nbsp;&nbsp;— При игре против ИИ: <em>техническое поражение игроку</em>.<br>
+                            &nbsp;&nbsp;— При игре между людьми: <em>предложение ничьей</em>.
+                        </p>
+                    </div>
+
+                    <div class="rules-section">
+                        <h3>4. Пополнение из банка, Отложенный шах и Резерв</h3>
+                        <p>
+                            • При потере своей фигуры игрок <strong>немедленно получает случайную новую</strong> из колоды банка.<br>
+                            • <strong>Отложенный шах:</strong> если фигура при появлении может сразу дать шах королю противника, она появляется <strong>через 1 ход</strong> (после хода игрока, у которого она должна появиться).<br>
+                            • Новая фигура ставится на свободную клетку базовой горизонтали (1-я для белых, 8-я для чёрных).<br>
+                            • Если вся базовая горизонталь занята, фигура попадает в <strong>Резерв</strong>.<br>
+                            • Как только клетка на базовой горизонтали освобождается, фигура из резерва автоматически занимает её!
+                        </p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" id="gotItRulesBtn">Понятно, в бой!</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Settings Modal -->
+        <div class="modal-overlay" id="aiSettingsModal">
+            <div class="modal-card ai-settings-card">
+                <div class="modal-header">
+                    <h2>🤖 Настройки игры против ИИ</h2>
+                    <button class="modal-close" id="closeAiSettingsBtn">&times;</button>
+                </div>
+                <div class="ai-settings-body">
+                    <div class="settings-group">
+                        <label class="settings-label">Выберите сторону игрока:</label>
+                        <div class="side-selector-grid" id="sideSelectorGrid">
+                            <button type="button" class="side-option-btn active" data-side="white">
+                                <span class="side-icon">♔</span>
+                                <span class="side-name">Белые</span>
+                                <span class="side-hint">Первый ход</span>
+                            </button>
+                            <button type="button" class="side-option-btn" data-side="black">
+                                <span class="side-icon">♚</span>
+                                <span class="side-name">Чёрные</span>
+                                <span class="side-hint">Второй ход</span>
+                            </button>
+                            <button type="button" class="side-option-btn" data-side="random">
+                                <span class="side-icon">🎲</span>
+                                <span class="side-name">Случайно</span>
+                                <span class="side-hint">Жребий</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="settings-group">
+                        <label class="settings-label">Сложность ИИ:</label>
+                        <div class="difficulty-cards-grid" id="diffSelectorGrid">
+                            <button type="button" class="diff-option-btn" data-diff="easy">
+                                <span class="diff-icon">🟢</span>
+                                <span class="diff-title">Новичок</span>
+                                <span class="diff-desc">Быстрая игра, базовые взятия</span>
+                            </button>
+                            <button type="button" class="diff-option-btn active" data-diff="medium">
+                                <span class="diff-icon">🟡</span>
+                                <span class="diff-title">Гроссмейстер</span>
+                                <span class="diff-desc">Сбалансированная тактика</span>
+                            </button>
+                            <button type="button" class="diff-option-btn" data-diff="hard">
+                                <span class="diff-icon">🔴</span>
+                                <span class="diff-title">Аналитик</span>
+                                <span class="diff-desc">Глубокий позиционный расчет</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelAiSettingsBtn">Отмена</button>
+                    <button class="btn btn-primary" id="startAiGameBtn">⚔️ Начать игру</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tutorial Modal -->
+        <div class="modal-overlay" id="tutorialModal">
+            <div class="modal-card tutorial-modal-card">
+                <div class="modal-header">
+                    <h2>🎓 Обучение: Правила «Шахматного дурака»</h2>
+                    <button class="modal-close" id="closeTutorialBtn">&times;</button>
+                </div>
+                <div class="tutorial-steps-container">
+                    <div class="tutorial-step active" data-step="1">
+                        <div class="step-badge">Урок 1 из 4</div>
+                        <h3>👑 Короли и цель игры</h3>
+                        <p>В начале игры на доске у обоих игроков есть только <strong>Короли</strong> на <code>e1</code> и <code>e8</code>. Король универсален: он не имеет масти, может атаковать любую незащищённую фигуру соперника и объявлять шах. Цель игры — поставить <strong>МАТ</strong> королю соперника!</p>
+                        <div class="step-illustration">♚ ★ ♔</div>
+                    </div>
+                    <div class="tutorial-step" data-step="2">
+                        <div class="step-badge">Урок 2 из 4</div>
+                        <h3>♠️ Масти и правила взятий</h3>
+                        <p>Все остальные 7 клеток на 1-й и 8-й горизонталях заполняются случайными фигурами с 4 мастями (♠ Пики, ♣ Крести, ♥ Черви, ♦ Бубни).<br><br><strong>Главное правило:</strong> фигура может срубить фигуру соперника <strong>только той же масти</strong> (♠ рубит ♠, ♥ рубит ♥). Фигуры другой масти нельзя рубить — они служат щитом и блокируют проход!</p>
+                        <div class="step-illustration">♠️ ⚔️ ♠️ &nbsp;|&nbsp; ♥️ ⚔️ ♥️</div>
+                    </div>
+                    <div class="tutorial-step" data-step="3">
+                        <div class="step-badge">Урок 3 из 4</div>
+                        <h3>🎴 Колода Банка и Резерв</h3>
+                        <p>В колоде банка <strong>60 фигур</strong>. Когда любая ваша фигура погибает, вы <strong>мгновенно получаете подкрепление</strong> из колоды банка! Новая фигура сразу появляется на вашей базовой горизонтали. Если все клетки заняты, она попадает в <strong>Резерв</strong> и мгновенно выйдет на доску, как только освободится место.</p>
+                        <div class="step-illustration">🎴 Банк 60 → ♟️ Резерв</div>
+                    </div>
+                    <div class="tutorial-step" data-step="4">
+                        <div class="step-badge">Урок 4 из 4</div>
+                        <h3>⭐ Превращение пешки</h3>
+                        <p>Когда пешка любой масти доходит до противоположного края доски (1-я или 8-я горизонталь), вы можете превратить её в <strong>любую сильную фигуру</strong> (Ферзь, Ладья, Слон, Конь) <strong>любой масти</strong> на ваш выбор (16 комбинаций)! Выбирайте масть тех фигур врага, которые хотите атаковать.</p>
+                        <div class="step-illustration">♟️ → ♛ (♠ ♣ ♥ ♦)</div>
+                    </div>
+                </div>
+                <div class="tutorial-nav-footer">
+                    <button class="btn btn-secondary" id="tutorialPrevBtn" disabled>← Назад</button>
+                    <div class="tutorial-step-dots" id="tutorialStepDots">
+                        <span class="dot active"></span>
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                    </div>
+                    <button class="btn btn-primary" id="tutorialNextBtn">Далее →</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pawn Promotion Modal -->
+        <div class="modal-overlay" id="promotionModal">
+            <div class="modal-card promotion-card">
+                <div class="modal-header">
+                    <h2>👑 Превращение пешки</h2>
+                </div>
+                <p class="promotion-prompt">Выберите новую фигуру и её масть:</p>
+                
+                <div class="promotion-matrix-wrapper">
+                    <div class="promotion-grid" id="promotionGrid">
+                        <!-- Populated dynamically with 16 options: 4 piece types x 4 suits -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Victory Modal -->
+        <div class="modal-overlay" id="victoryModal">
+            <div class="modal-card victory-card">
+                <button class="modal-close" id="closeVictoryBtn">&times;</button>
+                <div class="victory-icon" id="victoryIcon">🏆</div>
+                <h2 id="victoryTitle">Мат! Победа Белых</h2>
+                <p id="victoryDesc">Партия успешно завершена.</p>
+                <div class="victory-actions">
+                    <button class="btn btn-secondary" id="viewBoardBtn">🔍 Посмотреть доску</button>
+                    <button class="btn btn-primary" id="playAgainBtn">✨ Сыграть снова</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Draw Offer Modal (Threefold Repetition in Hotseat mode) -->
+        <div class="modal-overlay" id="drawOfferModal">
+            <div class="modal-card draw-offer-card" style="text-align: center; max-width: 440px; padding: 28px;">
+                <div style="font-size: 3rem; margin-bottom: 12px;">🤝</div>
+                <h2 style="font-family: 'Cinzel', serif; font-size: 1.4rem; color: var(--text-gold); margin-bottom: 10px;">Троекратное повторение</h2>
+                <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 22px; line-height: 1.5;">
+                    Одна и та же позиция повторилась на доске трижды. Предлагается зафиксировать ничью!
+                </p>
+                <div style="display: flex; justify-content: center; gap: 12px;">
+                    <button class="btn btn-secondary" id="declineDrawBtn">Продолжить игру</button>
+                    <button class="btn btn-primary" id="acceptDrawBtn">Согласиться на ничью</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="bundle.js"></script>
+</body>
+</html>
