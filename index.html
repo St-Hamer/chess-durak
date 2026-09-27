@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
     <title>Шахматный дурак — Уникальная настольная игра</title>
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -23,16 +23,16 @@
             
             <div class="header-controls">
                 <button id="rulesBtn" class="btn btn-secondary" title="Правила игры">
-                    <span class="btn-icon">📜</span> Правила
+                    <span class="btn-icon">📜</span><span class="btn-text">Правила</span>
                 </button>
                 <button id="soundToggleBtn" class="btn btn-icon-only" title="Вкл/Выкл звук">
                     <span id="soundIcon">🔊</span>
                 </button>
                 <button id="flipBoardBtn" class="btn btn-secondary" title="Перевернуть доску">
-                    <span class="btn-icon">🔄</span> Доска
+                    <span class="btn-icon">🔄</span><span class="btn-text">Доска</span>
                 </button>
                 <button id="newGameBtn" class="btn btn-primary" title="Начать новую партию">
-                    <span class="btn-icon">✨</span> Новая игра
+                    <span class="btn-icon">✨</span><span class="btn-text">Новая игра</span>
                 </button>
             </div>
         </header>
@@ -161,13 +161,13 @@
                     <h3 class="panel-title">Режим игры</h3>
                     <div class="mode-buttons">
                         <button class="mode-btn active" id="modeHotseatBtn" data-mode="hotseat">
-                            <span class="mode-icon">👥</span> 2 Игрока (Экран)
+                            <span class="mode-icon">👥</span> <span class="mode-text">2 Игрока</span>
                         </button>
                         <button class="mode-btn" id="modeAiBtn" data-mode="ai">
-                            <span class="mode-icon">🤖</span> Игра против ИИ
+                            <span class="mode-icon">🤖</span> <span class="mode-text">Против ИИ</span>
                         </button>
                         <button class="mode-btn" id="modeTutorialBtn" data-mode="tutorial">
-                            <span class="mode-icon">🎓</span> Обучение
+                            <span class="mode-icon">🎓</span> <span class="mode-text">Обучение</span>
                         </button>
                     </div>
 

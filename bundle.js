@@ -85,14 +85,11 @@ class SoundEffects {
         });
     }
 }
-
 const sounds = new SoundEffects();
-
 
 /**
  * Chess Durak - Piece and Suit Definitions
  */
-
 const SUITS = {
     spades: {
         id: 'spades',
@@ -123,7 +120,6 @@ const SUITS = {
         badgeClass: 'suit-diamonds'
     }
 };
-
 const PIECE_VALUES = {
     P: 100,
     N: 320,
@@ -132,7 +128,6 @@ const PIECE_VALUES = {
     Q: 900,
     K: 20000
 };
-
 const PIECE_NAMES = {
     P: 'Пешка',
     N: 'Конь',
@@ -143,20 +138,31 @@ const PIECE_NAMES = {
 };
 
 let pieceCounter = 1;
-
-function createPiece(type, color, suit = null) {
+function createPiece(type, color, suit = null, squareColor = null) {
     return {
         id: `p_${pieceCounter++}`,
         type,
         color, // 'white' | 'black'
         suit,  // 'spades' | 'clubs' | 'hearts' | 'diamonds' | null
+        squareColor, // 'light' | 'dark' | null (strictly for 'B')
         hasMoved: false
     };
 }
+const ALL_BISHOP_TOKENS = [
+    { suit: 'spades', squareColor: 'light' },
+    { suit: 'spades', squareColor: 'dark' },
+    { suit: 'clubs', squareColor: 'light' },
+    { suit: 'clubs', squareColor: 'dark' },
+    { suit: 'hearts', squareColor: 'light' },
+    { suit: 'hearts', squareColor: 'dark' },
+    { suit: 'diamonds', squareColor: 'light' },
+    { suit: 'diamonds', squareColor: 'dark' }
+];
 
 /**
  * Creates the standard 60-piece card deck for Chess Durak
  * 4 suits * (8 P + 2 N + 2 B + 2 R + 1 Q) = 60 pieces
+ * Each suit has strictly 1 light-squared bishop and 1 dark-squared bishop
  */
 function createDeck() {
     const deck = [];
@@ -171,10 +177,9 @@ function createDeck() {
         for (let i = 0; i < 2; i++) {
             deck.push({ type: 'N', suit });
         }
-        // 2 Bishops
-        for (let i = 0; i < 2; i++) {
-            deck.push({ type: 'B', suit });
-        }
+        // 1 Light Bishop and 1 Dark Bishop
+        deck.push({ type: 'B', suit, squareColor: 'light' });
+        deck.push({ type: 'B', suit, squareColor: 'dark' });
         // 2 Rooks
         for (let i = 0; i < 2; i++) {
             deck.push({ type: 'R', suit });
@@ -191,7 +196,6 @@ function createDeck() {
 
     return deck;
 }
-
 const PIECE_VALUES_MAP = {
     P: 1,
     N: 3,
@@ -214,8 +218,10 @@ function getRandomStartingPoints() {
 
 /**
  * Generates 7 suited pieces for a player such that their total value equals targetSum.
+ * Enforces rule: each suit has strictly 1 light-squared and 1 dark-squared bishop.
+ * Never generates same-colored bishops of the same suit.
  */
-function generatePiecesWithSum(targetSum, color) {
+function generatePiecesWithSum(targetSum, color, availableBishopsPool = null) {
     const pieceTypes = ['P', 'N', 'B', 'R', 'Q'];
     const maxCounts = { P: 7, N: 4, B: 4, R: 4, Q: 4 };
     const suitKeys = Object.keys(SUITS);
@@ -224,6 +230,18 @@ function generatePiecesWithSum(targetSum, color) {
     if (targetSum < 7) targetSum = 7;
     if (targetSum > 51) targetSum = 51;
     if (targetSum % 2 === 0) targetSum += 1;
+
+    // Bishop pool: use provided pool or default to full copy
+    const pool = availableBishopsPool || ALL_BISHOP_TOKENS.map(t => ({ ...t }));
+    const availLightCount = pool.filter(t => t.squareColor === 'light').length;
+    const availDarkCount = pool.filter(t => t.squareColor === 'dark').length;
+
+    // Base rank capacities:
+    // White row 7: 4 light squares, 3 dark squares
+    // Black row 0: 3 light squares, 4 dark squares
+    const maxLight = Math.min(availLightCount, color === 'white' ? 4 : 3);
+    const maxDark = Math.min(availDarkCount, color === 'white' ? 3 : 4);
+    const maxPossibleBishops = Math.min(4, maxLight + maxDark);
 
     // Find all valid 7-piece combinations that sum to targetSum
     const validCombos = [];
@@ -240,7 +258,8 @@ function generatePiecesWithSum(targetSum, color) {
         for (let i = typeIdx; i < pieceTypes.length; i++) {
             const t = pieceTypes[i];
             const currentTypeCount = chosen.filter(x => x === t).length;
-            if (currentTypeCount < maxCounts[t]) {
+            const limit = (t === 'B') ? maxPossibleBishops : maxCounts[t];
+            if (currentTypeCount < limit) {
                 search(i, count + 1, currentSum + PIECE_VALUES_MAP[t], [...chosen, t]);
             }
         }
@@ -252,18 +271,61 @@ function generatePiecesWithSum(targetSum, color) {
         ? validCombos[Math.floor(Math.random() * validCombos.length)]
         : ['P', 'P', 'P', 'P', 'P', 'P', 'P'];
 
+    // Assign bishops first from pool with strict squareColor constraints
+    const bishopCount = chosenCombo.filter(t => t === 'B').length;
+    const chosenBishops = [];
+
+    if (bishopCount > 0) {
+        const minL = Math.max(0, bishopCount - maxDark);
+        const maxL = Math.min(bishopCount, maxLight);
+        const possibleL = [];
+        for (let l = minL; l <= maxL; l++) {
+            possibleL.push(l);
+        }
+        const chosenL = possibleL[Math.floor(Math.random() * possibleL.length)];
+        const chosenD = bishopCount - chosenL;
+
+        const lightIndices = [];
+        const darkIndices = [];
+        pool.forEach((t, idx) => {
+            if (t.squareColor === 'light') lightIndices.push(idx);
+            else if (t.squareColor === 'dark') darkIndices.push(idx);
+        });
+
+        lightIndices.sort(() => Math.random() - 0.5);
+        darkIndices.sort(() => Math.random() - 0.5);
+
+        const pickedIndices = [
+            ...lightIndices.slice(0, chosenL),
+            ...darkIndices.slice(0, chosenD)
+        ].sort((a, b) => b - a);
+
+        for (const idx of pickedIndices) {
+            const [token] = pool.splice(idx, 1);
+            chosenBishops.push(token);
+        }
+    }
+
+    // Assign suits to other pieces
     const suitsUsedForType = {};
     const pieces = [];
+    let bishopIdx = 0;
+
     const shuffledTypes = [...chosenCombo].sort(() => Math.random() - 0.5);
 
     for (const type of shuffledTypes) {
-        if (!suitsUsedForType[type]) suitsUsedForType[type] = [];
-        const availableSuits = suitKeys.filter(s => !suitsUsedForType[type].includes(s));
-        const suitPool = availableSuits.length > 0 ? availableSuits : suitKeys;
-        const chosenSuit = suitPool[Math.floor(Math.random() * suitPool.length)];
-        suitsUsedForType[type].push(chosenSuit);
+        if (type === 'B') {
+            const bToken = chosenBishops[bishopIdx++];
+            pieces.push(createPiece('B', color, bToken.suit, bToken.squareColor));
+        } else {
+            if (!suitsUsedForType[type]) suitsUsedForType[type] = [];
+            const availableSuits = suitKeys.filter(s => !suitsUsedForType[type].includes(s));
+            const suitPool = availableSuits.length > 0 ? availableSuits : suitKeys;
+            const chosenSuit = suitPool[Math.floor(Math.random() * suitPool.length)];
+            suitsUsedForType[type].push(chosenSuit);
 
-        pieces.push(createPiece(type, color, chosenSuit));
+            pieces.push(createPiece(type, color, chosenSuit));
+        }
     }
 
     return pieces;
@@ -307,7 +369,11 @@ function renderPieceElement(piece) {
         const badge = document.createElement('div');
         badge.className = `suit-badge ${suitInfo.badgeClass}`;
         badge.textContent = suitInfo.symbol;
-        badge.title = `${PIECE_NAMES[piece.type]} (${suitInfo.name})`;
+        let bishopDesc = '';
+        if (piece.type === 'B' && piece.squareColor) {
+            bishopDesc = piece.squareColor === 'light' ? ' (белопольный)' : ' (чернопольный)';
+        }
+        badge.title = `${PIECE_NAMES[piece.type]}${bishopDesc} (${suitInfo.name})`;
         el.appendChild(badge);
     } else if (piece.type === 'K') {
         const crown = document.createElement('div');
@@ -320,11 +386,9 @@ function renderPieceElement(piece) {
     return el;
 }
 
-
 /**
  * Chess Durak - Board representation and coordinate helpers
  */
-
 class Board {
     constructor() {
         // 8x8 grid, 0=Rank 8 (Black side), 7=Rank 1 (White side)
@@ -418,27 +482,59 @@ class Board {
         this.setPiece(7, 4, createPiece('K', 'white', null));
         this.setPiece(0, 4, createPiece('K', 'black', null));
 
+        // Prepare shared bishops pool (8 unique tokens: 1 light and 1 dark per suit)
+        const bishopsPool = ALL_BISHOP_TOKENS.map(t => ({ ...t }));
+
         // Generate 7 pieces for White and 7 for Black with equal point values
-        const whitePieces = generatePiecesWithSum(targetSum, 'white');
-        const blackPieces = generatePiecesWithSum(targetSum, 'black');
+        const whitePieces = generatePiecesWithSum(targetSum, 'white', bishopsPool);
+        const blackPieces = generatePiecesWithSum(targetSum, 'black', bishopsPool);
 
-        // Deal 7 pieces to White on Rank 1 (row 7)
-        const whiteCols = [0, 1, 2, 3, 5, 6, 7];
-        whiteCols.forEach((col, idx) => {
-            this.setPiece(7, col, whitePieces[idx]);
-        });
+        // Helper to place 7 pieces on base rank strictly matching bishop square colors
+        const placeRankPieces = (row, pieces, isWhite) => {
+            // White row 7: light squares are [1, 3, 5, 7], dark squares are [0, 2, 6]
+            // Black row 0: light squares are [0, 2, 6], dark squares are [1, 3, 5, 7]
+            const lightCols = isWhite ? [1, 3, 5, 7] : [0, 2, 6];
+            const darkCols = isWhite ? [0, 2, 6] : [1, 3, 5, 7];
 
-        // Deal 7 pieces to Black on Rank 8 (row 0)
-        const blackCols = [0, 1, 2, 3, 5, 6, 7];
-        blackCols.forEach((col, idx) => {
-            this.setPiece(0, col, blackPieces[idx]);
-        });
+            const availLight = [...lightCols].sort(() => Math.random() - 0.5);
+            const availDark = [...darkCols].sort(() => Math.random() - 0.5);
 
-        // Sync bank deck: remove matching dealt cards where possible, and trim deck to 46 cards
+            const lightBishops = pieces.filter(p => p.type === 'B' && p.squareColor === 'light');
+            const darkBishops = pieces.filter(p => p.type === 'B' && p.squareColor === 'dark');
+            const otherPieces = pieces.filter(p => p.type !== 'B');
+
+            for (const b of lightBishops) {
+                const col = availLight.pop();
+                this.setPiece(row, col, b);
+            }
+            for (const b of darkBishops) {
+                const col = availDark.pop();
+                this.setPiece(row, col, b);
+            }
+
+            const remainingCols = [...availLight, ...availDark].sort(() => Math.random() - 0.5);
+            for (const p of otherPieces) {
+                const col = remainingCols.pop();
+                this.setPiece(row, col, p);
+            }
+        };
+
+        // Deal to White on Rank 1 (row 7)
+        placeRankPieces(7, whitePieces, true);
+
+        // Deal to Black on Rank 8 (row 0)
+        placeRankPieces(0, blackPieces, false);
+
+        // Sync bank deck: remove exact matching dealt cards, and trim deck to 46 cards
         if (deck && deck.length > 0) {
             const allDealt = [...whitePieces, ...blackPieces];
             for (const piece of allDealt) {
-                const cardIdx = deck.findIndex(c => c.type === piece.type && c.suit === piece.suit);
+                let cardIdx = -1;
+                if (piece.type === 'B') {
+                    cardIdx = deck.findIndex(c => c.type === 'B' && c.suit === piece.suit && c.squareColor === piece.squareColor);
+                } else {
+                    cardIdx = deck.findIndex(c => c.type === piece.type && c.suit === piece.suit);
+                }
                 if (cardIdx !== -1) {
                     deck.splice(cardIdx, 1);
                 } else if (deck.length > 46) {
@@ -467,11 +563,9 @@ class Board {
     }
 }
 
-
 /**
  * Chess Durak - Core Rules, Move Validation, Suit Captures, Bank Spawning & Reserves
  */
-
 class GameRules {
     /**
      * Check if a square (targetR, targetC) is geometrically attacked by pieces of attackerColor
@@ -797,17 +891,17 @@ class GameEngine {
             for (let c = 0; c < 8; c++) {
                 const p = this.board.grid[r][c];
                 if (p) {
-                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'};`;
+                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''};`;
                 }
             }
         }
         key += '|W_RES:';
         for (const p of this.whiteReserve) {
-            key += `${p.type}${p.suit};`;
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
         }
         key += '|B_RES:';
         for (const p of this.blackReserve) {
-            key += `${p.type}${p.suit};`;
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
         }
         return key;
     }
@@ -894,8 +988,14 @@ class GameEngine {
                 if (promotionChoice && promotionChoice.type && promotionChoice.suit) {
                     piece.type = promotionChoice.type;
                     piece.suit = promotionChoice.suit;
+                    if (piece.type === 'B') {
+                        piece.squareColor = (toR + toC) % 2 === 0 ? 'light' : 'dark';
+                    } else {
+                        piece.squareColor = null;
+                    }
                 } else {
                     piece.type = 'Q'; // Fallback to Queen
+                    piece.squareColor = null;
                 }
             }
         }
@@ -912,13 +1012,17 @@ class GameEngine {
             // Opponent draws a replacement card from bank
             if (this.deck.length > 0) {
                 const card = this.deck.pop();
-                const replacementPiece = createPiece(card.type, opponentColor, card.suit);
+                const replacementPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
                 const baseRow = opponentColor === 'white' ? 7 : 0;
                 const emptyCols = this.board.getEmptyBaseCols(baseRow);
+                let candidateCols = emptyCols;
+                if (replacementPiece.type === 'B') {
+                    candidateCols = emptyCols.filter(c => ((baseRow + c) % 2 === 0 ? 'light' : 'dark') === replacementPiece.squareColor);
+                }
 
-                if (emptyCols.length > 0) {
-                    // Random empty square on base rank
-                    const chosenCol = emptyCols[Math.floor(Math.random() * emptyCols.length)];
+                if (candidateCols.length > 0) {
+                    // Random empty square on base rank matching square color
+                    const chosenCol = candidateCols[Math.floor(Math.random() * candidateCols.length)];
 
                     // Check if spawning this piece immediately gives check to movingColor's king
                     this.board.setPiece(baseRow, chosenCol, replacementPiece);
@@ -947,7 +1051,7 @@ class GameEngine {
                         this.spawnEvents.push(spawnedForOpponent);
                     }
                 } else {
-                    // Base rank full -> goes to reserve
+                    // Base rank has no matching available slot -> goes to reserve
                     if (opponentColor === 'white') {
                         this.whiteReserve.push(replacementPiece);
                     } else {
@@ -967,8 +1071,13 @@ class GameEngine {
         for (const delayed of this.delayedSpawns) {
             if (delayed.player === movingColor) {
                 const emptyCols = this.board.getEmptyBaseCols(movingBaseRow);
-                if (emptyCols.length > 0) {
-                    const chosenCol = emptyCols[Math.floor(Math.random() * emptyCols.length)];
+                let candidateCols = emptyCols;
+                if (delayed.piece.type === 'B') {
+                    candidateCols = emptyCols.filter(c => ((movingBaseRow + c) % 2 === 0 ? 'light' : 'dark') === delayed.piece.squareColor);
+                }
+
+                if (candidateCols.length > 0) {
+                    const chosenCol = candidateCols[Math.floor(Math.random() * candidateCols.length)];
                     this.board.setPiece(movingBaseRow, chosenCol, delayed.piece);
                     this.spawnEvents.push({
                         piece: delayed.piece,
@@ -998,18 +1107,37 @@ class GameEngine {
         if (reserve.length > 0) {
             const emptyCols = this.board.getEmptyBaseCols(movingBaseRow);
             if (emptyCols.length > 0) {
-                const reservePiece = reserve.shift();
-                let chosenCol = (fromR === movingBaseRow && emptyCols.includes(fromC)) 
-                    ? fromC 
-                    : emptyCols[0];
+                let candidateIdx = -1;
+                let candidateCol = null;
 
-                this.board.setPiece(movingBaseRow, chosenCol, reservePiece);
-                this.spawnEvents.push({
-                    piece: reservePiece,
-                    r: movingBaseRow,
-                    c: chosenCol,
-                    type: 'reserve_spawn'
-                });
+                for (let i = 0; i < reserve.length; i++) {
+                    const p = reserve[i];
+                    let validCols = emptyCols;
+                    if (p.type === 'B') {
+                        validCols = emptyCols.filter(c => ((movingBaseRow + c) % 2 === 0 ? 'light' : 'dark') === p.squareColor);
+                    }
+                    if (validCols.length > 0) {
+                        candidateIdx = i;
+                        // Prefer square vacated by moving piece if it's on base row and valid
+                        if (fromR === movingBaseRow && validCols.includes(fromC)) {
+                            candidateCol = fromC;
+                        } else {
+                            candidateCol = validCols[0];
+                        }
+                        break;
+                    }
+                }
+
+                if (candidateIdx !== -1) {
+                    const [reservePiece] = reserve.splice(candidateIdx, 1);
+                    this.board.setPiece(movingBaseRow, candidateCol, reservePiece);
+                    this.spawnEvents.push({
+                        piece: reservePiece,
+                        r: movingBaseRow,
+                        c: candidateCol,
+                        type: 'reserve_spawn'
+                    });
+                }
             }
         }
 
@@ -1079,11 +1207,9 @@ class GameEngine {
     }
 }
 
-
 /**
  * Chess Durak - Intelligent AI Engine
  */
-
 class ChessDurakAI {
     constructor(engine) {
         this.engine = engine;
@@ -1360,11 +1486,9 @@ class ChessDurakAI {
     }
 }
 
-
 /**
  * Chess Durak - Main Application Controller
  */
-
 class ChessDurakApp {
     constructor() {
         this.engine = new GameEngine();
@@ -2165,7 +2289,11 @@ class ChessDurakApp {
                     <div class="piece-svg">${PIECE_SVGS[p.color][p.type]}</div>
                     <div class="suit-badge suit-${p.suit}">${SUITS[p.suit].symbol}</div>
                 `;
-                miniCard.title = `${PIECE_NAMES[p.type]} (${SUITS[p.suit].name}) в резерве`;
+                let bishopDesc = '';
+                if (p.type === 'B' && p.squareColor) {
+                    bishopDesc = p.squareColor === 'light' ? ' (белопольный)' : ' (чернопольный)';
+                }
+                miniCard.title = `${PIECE_NAMES[p.type]}${bishopDesc} (${SUITS[p.suit].name}) в резерве`;
                 reserveSlotsEl.appendChild(miniCard);
             });
         }
@@ -2246,4 +2374,3 @@ class ChessDurakApp {
 window.addEventListener('DOMContentLoaded', () => {
     window.chessDurakApp = new ChessDurakApp();
 });
-
