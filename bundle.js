@@ -692,9 +692,11 @@ class GameRules {
             if (board.isInBounds(nextR, c) && board.getPiece(nextR, c) === null) {
                 moves.push({ r: nextR, c });
 
-                // Forward 2 from rank 1/2 (White) or rank 7/8 (Black)
-                const isPawnStart = (color === 'white' && (r === 6 || r === 7)) ||
-                                    (color === 'black' && (r === 1 || r === 0));
+                // Forward 2 from starting rank ONLY if piece has not moved yet
+                const isPawnStart = !piece.hasMoved && (
+                    (color === 'white' && (r === 6 || r === 7)) ||
+                    (color === 'black' && (r === 1 || r === 0))
+                );
                 const next2R = r + 2 * dir;
                 if (isPawnStart && board.isInBounds(next2R, c) && board.getPiece(next2R, c) === null) {
                     moves.push({ r: next2R, c });
@@ -1249,6 +1251,7 @@ class ChessDurakAI {
             simBoard.removePiece(move.to.r, move.to.c);
             simBoard.removePiece(move.from.r, move.from.c);
             simBoard.setPiece(move.to.r, move.to.c, movingPiece);
+            if (movingPiece) movingPiece.hasMoved = true;
 
             // Handle promotion in sim
             if (movingPiece.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
@@ -1297,6 +1300,7 @@ class ChessDurakAI {
             simBoard.removePiece(m.to.r, m.to.c);
             simBoard.removePiece(m.from.r, m.from.c);
             simBoard.setPiece(m.to.r, m.to.c, p);
+            if (p) p.hasMoved = true;
             const oppColor = color === 'white' ? 'black' : 'white';
             if (GameRules.isKingInCheck(simBoard, oppColor)) {
                 priority += 300;
@@ -1367,6 +1371,7 @@ class ChessDurakAI {
                 simBoard.removePiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.from.r, move.from.c);
                 simBoard.setPiece(move.to.r, move.to.c, p);
+                if (p) p.hasMoved = true;
                 if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) p.type = 'Q';
 
                 const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, false, myColor, opponentColor, isHard);
@@ -1383,6 +1388,7 @@ class ChessDurakAI {
                 simBoard.removePiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.from.r, move.from.c);
                 simBoard.setPiece(move.to.r, move.to.c, p);
+                if (p) p.hasMoved = true;
                 if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) p.type = 'Q';
 
                 const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, true, myColor, opponentColor, isHard);
