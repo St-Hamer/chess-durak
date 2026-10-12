@@ -981,6 +981,9 @@ class GameEngine {
         this.board.setPiece(toR, toC, piece);
         piece.hasMoved = true;
 
+        const movingPieceType = piece.type;
+        const movingPieceSuit = piece.suit;
+
         // 2. Handle Pawn Promotion (any stronger piece + any suit chosen by player)
         let isPromotion = false;
         if (piece.type === 'P') {
@@ -1147,7 +1150,7 @@ class GameEngine {
         const isOpponentInCheck = GameRules.isKingInCheck(this.board, opponentColor);
         const opponentMoves = GameRules.getAllLegalMoves(this.board, opponentColor);
 
-        let moveNotation = this.formatNotation(piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0);
+        let moveNotation = this.formatNotation(movingPieceType, movingPieceSuit, piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0);
 
         if (opponentMoves.length === 0) {
             if (isOpponentInCheck) {
@@ -1191,16 +1194,16 @@ class GameEngine {
         };
     }
 
-    formatNotation(piece, fromR, fromC, toR, toC, captured, isPromotion, isCheck, isCheckmate) {
+    formatNotation(originalType, originalSuit, currentPiece, fromR, fromC, toR, toC, captured, isPromotion, isCheck, isCheckmate) {
         const fromNot = Board.toNotation(fromR, fromC);
         const toNot = Board.toNotation(toR, toC);
-        const pieceSymbol = piece.type === 'P' ? '' : (piece.type === 'N' ? 'N' : piece.type);
-        const suitSymbol = piece.suit ? SUITS[piece.suit].symbol : '';
+        const pieceSymbol = originalType === 'P' ? '' : (originalType === 'N' ? 'N' : originalType);
+        const suitSymbol = originalSuit ? SUITS[originalSuit].symbol : '';
         const capSymbol = captured ? 'x' : '-';
         let notStr = `${pieceSymbol}${suitSymbol ? suitSymbol : ''}${fromNot}${capSymbol}${toNot}`;
         if (isPromotion) {
-            const promoPieceSym = piece.type === 'N' ? 'N' : piece.type;
-            const promoSuitSym = piece.suit ? SUITS[piece.suit].symbol : '';
+            const promoPieceSym = currentPiece.type === 'N' ? 'N' : currentPiece.type;
+            const promoSuitSym = currentPiece.suit ? SUITS[currentPiece.suit].symbol : '';
             notStr += `=${promoPieceSym}${promoSuitSym}`;
         }
         if (isCheckmate) notStr += '#';
@@ -1227,10 +1230,20 @@ class ChessDurakAI {
         if (difficulty === 'easy') {
             // Easy: prioritize captures, otherwise random
             const captures = legalMoves.filter(m => m.isCapture);
+            let chosenMove = null;
             if (captures.length > 0 && Math.random() < 0.7) {
-                return captures[Math.floor(Math.random() * captures.length)];
+                chosenMove = captures[Math.floor(Math.random() * captures.length)];
+            } else {
+                chosenMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
             }
-            return legalMoves[Math.floor(Math.random() * legalMoves.length)];
+            if (chosenMove && chosenMove.piece.type === 'P' && (chosenMove.to.r === 0 || chosenMove.to.r === 7)) {
+                const opponentColor = color === 'white' ? 'black' : 'white';
+                chosenMove.promotionChoice = {
+                    type: 'Q',
+                    suit: this.getBestPromotionSuit(this.engine.board, opponentColor)
+                };
+            }
+            return chosenMove;
         }
 
         const isHard = (difficulty === 'hard');
@@ -1445,34 +1458,27 @@ class ChessDurakAI {
 
         // ANALYTICAL MODE (Hard): Durak suit-matching tactical threat matrix
         if (isHard) {
-            // 1. Check if my pieces are threatened by matching-suit enemy pieces
-            for (const myP of myPieces) {
-                if (myP.piece.type === 'K') continue;
-
-                for (const oppP of oppPieces) {
-                    // In Chess Durak, can oppP capture myP?
-                    // King can capture any piece; other pieces capture only identical suit
-                    const canCapture = (oppP.piece.type === 'K') || (oppP.piece.suit && oppP.piece.suit === myP.piece.suit);
-                    if (canCapture) {
-                        if (GameRules.isSquareAttackedBy(board, myP.r, myP.c, opponentColor)) {
-                            // If an enemy piece of lower or equal value attacks my piece, penalize heavily
-                            score -= (myP.val * 0.65);
-                            break;
+            // 1. Check if my pieces are threatened by enemy pieces (matching suit or enemy King)
+            for (const oppP of oppPieces) {
+                const oppMoves = GameRules.getPseudoLegalMoves(board, oppP.r, oppP.c);
+                for (const m of oppMoves) {
+                    if (m.isCapture) {
+                        const threatened = myPieces.find(p => p.r === m.r && p.c === m.c);
+                        if (threatened && threatened.piece.type !== 'K') {
+                            score -= (threatened.val * 0.65);
                         }
                     }
                 }
             }
 
-            // 2. Check if enemy pieces are vulnerable to my matching-suit attacks
-            for (const oppP of oppPieces) {
-                if (oppP.piece.type === 'K') continue;
-
-                for (const myP of myPieces) {
-                    const canCapture = (myP.piece.type === 'K') || (myP.piece.suit && myP.piece.suit === oppP.piece.suit);
-                    if (canCapture) {
-                        if (GameRules.isSquareAttackedBy(board, oppP.r, oppP.c, myColor)) {
-                            score += (oppP.val * 0.6);
-                            break;
+            // 2. Check if enemy pieces are vulnerable to my attacks (matching suit or my King)
+            for (const myP of myPieces) {
+                const myMoves = GameRules.getPseudoLegalMoves(board, myP.r, myP.c);
+                for (const m of myMoves) {
+                    if (m.isCapture) {
+                        const targetOpp = oppPieces.find(p => p.r === m.r && p.c === m.c);
+                        if (targetOpp && targetOpp.piece.type !== 'K') {
+                            score += (targetOpp.val * 0.6);
                         }
                     }
                 }
