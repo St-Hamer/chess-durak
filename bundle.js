@@ -204,131 +204,159 @@ const PIECE_VALUES_MAP = {
     Q: 9
 };
 
+const pieceTypes = ['P', 'N', 'B', 'R', 'Q'];
+
 /**
- * Returns a random odd integer from 7 to 51.
+ * Precompute all valid 7-piece combinations for every odd sum in [7, 41].
+ * Max sum 41 is the highest sum simultaneously achievable by both players from the real 60-card deck.
+ */
+const combosBySum = {};
+for (let s = 7; s <= 41; s += 2) combosBySum[s] = [];
+
+function genCombos(idx, count, curSum, chosen) {
+    if (count === 7) {
+        if (combosBySum[curSum]) combosBySum[curSum].push([...chosen]);
+        return;
+    }
+    if (curSum + (7 - count) * 1 > 41) return;
+    if (curSum + (7 - count) * 9 < 7) return;
+    for (let i = idx; i < pieceTypes.length; i++) {
+        const t = pieceTypes[i];
+        genCombos(i, count + 1, curSum + PIECE_VALUES_MAP[t], [...chosen, t]);
+    }
+}
+genCombos(0, 0, 0, []);
+const STARTING_POINTS_RANGE = { min: 7, max: 41 };
+
+/**
+ * Returns a random odd integer from 7 to 41.
  * Any sum of 7 pieces with odd values (1, 3, 5, 9) is strictly odd.
  */
 function getRandomStartingPoints() {
     const oddSums = [];
-    for (let s = 7; s <= 51; s += 2) {
+    for (let s = STARTING_POINTS_RANGE.min; s <= STARTING_POINTS_RANGE.max; s += 2) {
         oddSums.push(s);
     }
     return oddSums[Math.floor(Math.random() * oddSums.length)];
 }
 
 /**
- * Generates 7 suited pieces for a player such that their total value equals targetSum.
- * Enforces rule: each suit has strictly 1 light-squared and 1 dark-squared bishop.
- * Never generates same-colored bishops of the same suit.
+ * Deals 7 suited pieces for White and 7 for Black directly from the real 60-card deck.
+ * Guaranteed:
+ * - Equal sums for White and Black equal to targetSum (odd, in [7, 41])
+ * - Dealt cards are removed from the deck, leaving exactly 46 cards in deck
+ * - Strict deck composition is preserved (no duplicate Q of same suit, etc.)
+ * - Bishop squareColor constraints match board geometry (White row 7: max 4 light, 3 dark; Black row 0: max 3 light, 4 dark)
  */
-function generatePiecesWithSum(targetSum, color, availableBishopsPool = null) {
-    const pieceTypes = ['P', 'N', 'B', 'R', 'Q'];
-    const maxCounts = { P: 7, N: 4, B: 4, R: 4, Q: 4 };
-    const suitKeys = Object.keys(SUITS);
-
-    // If targetSum is even or out of bounds, clamp to nearest odd in [7, 51]
-    if (targetSum < 7) targetSum = 7;
-    if (targetSum > 51) targetSum = 51;
+function dealPiecesFromDeck(deck, targetSum = null) {
+    if (targetSum === null || targetSum === undefined) {
+        targetSum = getRandomStartingPoints();
+    }
+    if (targetSum < STARTING_POINTS_RANGE.min) targetSum = STARTING_POINTS_RANGE.min;
+    if (targetSum > STARTING_POINTS_RANGE.max) targetSum = STARTING_POINTS_RANGE.max;
     if (targetSum % 2 === 0) targetSum += 1;
 
-    // Bishop pool: use provided pool or default to full copy
-    const pool = availableBishopsPool || ALL_BISHOP_TOKENS.map(t => ({ ...t }));
-    const availLightCount = pool.filter(t => t.squareColor === 'light').length;
-    const availDarkCount = pool.filter(t => t.squareColor === 'dark').length;
+    const validCombos = combosBySum[targetSum];
+    if (!validCombos || validCombos.length === 0) {
+        throw new Error(`No valid combinations for target sum ${targetSum}`);
+    }
 
-    // Base rank capacities:
-    // White row 7: 4 light squares, 3 dark squares
-    // Black row 0: 3 light squares, 4 dark squares
-    const maxLight = Math.min(availLightCount, color === 'white' ? 4 : 3);
-    const maxDark = Math.min(availDarkCount, color === 'white' ? 3 : 4);
-    const maxPossibleBishops = Math.min(4, maxLight + maxDark);
+    const shuffledW = [...validCombos].sort(() => Math.random() - 0.5);
+    const shuffledB = [...validCombos].sort(() => Math.random() - 0.5);
 
-    // Find all valid 7-piece combinations that sum to targetSum
-    const validCombos = [];
-    function search(typeIdx, count, currentSum, chosen) {
-        if (count === 7) {
-            if (currentSum === targetSum) {
-                validCombos.push([...chosen]);
+    for (const cW of shuffledW) {
+        for (const cB of shuffledB) {
+            const countW = { P: 0, N: 0, B: 0, R: 0, Q: 0 };
+            const countB = { P: 0, N: 0, B: 0, R: 0, Q: 0 };
+            for (const t of cW) countW[t]++;
+            for (const t of cB) countB[t]++;
+
+            let possible = true;
+            for (const t of pieceTypes) {
+                const totalInDeck = (t === 'P' ? 32 : (t === 'Q' ? 4 : 8));
+                if (countW[t] + countB[t] > totalInDeck) {
+                    possible = false;
+                    break;
+                }
             }
-            return;
-        }
-        if (currentSum + (7 - count) * 1 > targetSum) return;
-        if (currentSum + (7 - count) * 9 < targetSum) return;
+            if (!possible) continue;
 
-        for (let i = typeIdx; i < pieceTypes.length; i++) {
-            const t = pieceTypes[i];
-            const currentTypeCount = chosen.filter(x => x === t).length;
-            const limit = (t === 'B') ? maxPossibleBishops : maxCounts[t];
-            if (currentTypeCount < limit) {
-                search(i, count + 1, currentSum + PIECE_VALUES_MAP[t], [...chosen, t]);
+            const bW = countW['B'];
+            const bB = countB['B'];
+            const possibleDist = [];
+            for (let lW = Math.max(0, bW - 3); lW <= Math.min(bW, 4); lW++) {
+                const dW = bW - lW;
+                for (let lB = Math.max(0, bB - 4); lB <= Math.min(bB, 3); lB++) {
+                    const dB = bB - lB;
+                    if (lW + lB <= 4 && dW + dB <= 4) {
+                        possibleDist.push({ lW, dW, lB, dB });
+                    }
+                }
             }
+            if (possibleDist.length === 0) continue;
+
+            const dist = possibleDist[Math.floor(Math.random() * possibleDist.length)];
+
+            // Separate current deck into cards by category
+            const lightBishops = [];
+            const darkBishops = [];
+            const othersByType = { P: [], N: [], R: [], Q: [] };
+
+            for (let i = 0; i < deck.length; i++) {
+                const card = deck[i];
+                if (card.type === 'B') {
+                    if (card.squareColor === 'light') lightBishops.push(card);
+                    else darkBishops.push(card);
+                } else {
+                    othersByType[card.type].push(card);
+                }
+            }
+
+            // Draw White cards
+            const whiteCards = [];
+            for (let i = 0; i < dist.lW; i++) whiteCards.push(lightBishops.pop());
+            for (let i = 0; i < dist.dW; i++) whiteCards.push(darkBishops.pop());
+            for (const t of ['P', 'N', 'R', 'Q']) {
+                for (let i = 0; i < countW[t]; i++) whiteCards.push(othersByType[t].pop());
+            }
+
+            // Draw Black cards
+            const blackCards = [];
+            for (let i = 0; i < dist.lB; i++) blackCards.push(lightBishops.pop());
+            for (let i = 0; i < dist.dB; i++) blackCards.push(darkBishops.pop());
+            for (const t of ['P', 'N', 'R', 'Q']) {
+                for (let i = 0; i < countB[t]; i++) blackCards.push(othersByType[t].pop());
+            }
+
+            // Remaining cards form the remaining deck
+            const remainingDeck = [
+                ...lightBishops,
+                ...darkBishops,
+                ...othersByType.P,
+                ...othersByType.N,
+                ...othersByType.R,
+                ...othersByType.Q
+            ];
+            for (let i = remainingDeck.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [remainingDeck[i], remainingDeck[j]] = [remainingDeck[j], remainingDeck[i]];
+            }
+
+            deck.length = 0;
+            deck.push(...remainingDeck);
+
+            if (deck.length !== 46) {
+                throw new Error(`Deck invariant violated: remaining cards count is ${deck.length}, expected 46`);
+            }
+
+            const whitePieces = whiteCards.map(c => createPiece(c.type, 'white', c.suit, c.squareColor || null));
+            const blackPieces = blackCards.map(c => createPiece(c.type, 'black', c.suit, c.squareColor || null));
+
+            return { targetSum, whitePieces, blackPieces };
         }
     }
 
-    search(0, 0, 0, []);
-
-    const chosenCombo = validCombos.length > 0
-        ? validCombos[Math.floor(Math.random() * validCombos.length)]
-        : ['P', 'P', 'P', 'P', 'P', 'P', 'P'];
-
-    // Assign bishops first from pool with strict squareColor constraints
-    const bishopCount = chosenCombo.filter(t => t === 'B').length;
-    const chosenBishops = [];
-
-    if (bishopCount > 0) {
-        const minL = Math.max(0, bishopCount - maxDark);
-        const maxL = Math.min(bishopCount, maxLight);
-        const possibleL = [];
-        for (let l = minL; l <= maxL; l++) {
-            possibleL.push(l);
-        }
-        const chosenL = possibleL[Math.floor(Math.random() * possibleL.length)];
-        const chosenD = bishopCount - chosenL;
-
-        const lightIndices = [];
-        const darkIndices = [];
-        pool.forEach((t, idx) => {
-            if (t.squareColor === 'light') lightIndices.push(idx);
-            else if (t.squareColor === 'dark') darkIndices.push(idx);
-        });
-
-        lightIndices.sort(() => Math.random() - 0.5);
-        darkIndices.sort(() => Math.random() - 0.5);
-
-        const pickedIndices = [
-            ...lightIndices.slice(0, chosenL),
-            ...darkIndices.slice(0, chosenD)
-        ].sort((a, b) => b - a);
-
-        for (const idx of pickedIndices) {
-            const [token] = pool.splice(idx, 1);
-            chosenBishops.push(token);
-        }
-    }
-
-    // Assign suits to other pieces
-    const suitsUsedForType = {};
-    const pieces = [];
-    let bishopIdx = 0;
-
-    const shuffledTypes = [...chosenCombo].sort(() => Math.random() - 0.5);
-
-    for (const type of shuffledTypes) {
-        if (type === 'B') {
-            const bToken = chosenBishops[bishopIdx++];
-            pieces.push(createPiece('B', color, bToken.suit, bToken.squareColor));
-        } else {
-            if (!suitsUsedForType[type]) suitsUsedForType[type] = [];
-            const availableSuits = suitKeys.filter(s => !suitsUsedForType[type].includes(s));
-            const suitPool = availableSuits.length > 0 ? availableSuits : suitKeys;
-            const chosenSuit = suitPool[Math.floor(Math.random() * suitPool.length)];
-            suitsUsedForType[type].push(chosenSuit);
-
-            pieces.push(createPiece(type, color, chosenSuit));
-        }
-    }
-
-    return pieces;
+    throw new Error(`Failed to find compatible piece distribution for target sum ${targetSum}`);
 }
 
 // Crisp Vector SVGs for chess pieces
@@ -464,17 +492,14 @@ class Board {
 
     /**
      * Set up the initial Chess Durak starting board:
-     * - Random target value chosen from 7 to 51 (all 7 odd pieces sum to an odd number)
+     * - Random target value chosen from 7 to 41 (all 7 odd pieces sum to an odd number)
      * - White King at e1 (7, 4), Black King at e8 (0, 4)
-     * - 7 pieces dealt to White summing to targetSum
-     * - 7 pieces dealt to Black summing to targetSum
+     * - 7 pieces dealt directly from the 60-card deck to White summing to targetSum
+     * - 7 pieces dealt directly from the 60-card deck to Black summing to targetSum
+     * - Remaining deck invariant: exactly 46 cards
      * Returns targetSum.
      */
     setupInitialPosition(deck, targetSum = null) {
-        if (!targetSum) {
-            targetSum = getRandomStartingPoints();
-        }
-
         // Clear grid
         this.grid = Array(8).fill(null).map(() => Array(8).fill(null));
 
@@ -482,12 +507,13 @@ class Board {
         this.setPiece(7, 4, createPiece('K', 'white', null));
         this.setPiece(0, 4, createPiece('K', 'black', null));
 
-        // Prepare shared bishops pool (8 unique tokens: 1 light and 1 dark per suit)
-        const bishopsPool = ALL_BISHOP_TOKENS.map(t => ({ ...t }));
+        // Deal pieces directly from deck
+        const dealResult = dealPiecesFromDeck(deck, targetSum);
+        const { targetSum: finalSum, whitePieces, blackPieces } = dealResult;
 
-        // Generate 7 pieces for White and 7 for Black with equal point values
-        const whitePieces = generatePiecesWithSum(targetSum, 'white', bishopsPool);
-        const blackPieces = generatePiecesWithSum(targetSum, 'black', bishopsPool);
+        if (deck.length !== 46) {
+            throw new Error(`Deck invariant violated: expected 46 cards remaining, got ${deck.length}`);
+        }
 
         // Helper to place 7 pieces on base rank strictly matching bishop square colors
         const placeRankPieces = (row, pieces, isWhite) => {
@@ -525,28 +551,7 @@ class Board {
         // Deal to Black on Rank 8 (row 0)
         placeRankPieces(0, blackPieces, false);
 
-        // Sync bank deck: remove exact matching dealt cards, and trim deck to 46 cards
-        if (deck && deck.length > 0) {
-            const allDealt = [...whitePieces, ...blackPieces];
-            for (const piece of allDealt) {
-                let cardIdx = -1;
-                if (piece.type === 'B') {
-                    cardIdx = deck.findIndex(c => c.type === 'B' && c.suit === piece.suit && c.squareColor === piece.squareColor);
-                } else {
-                    cardIdx = deck.findIndex(c => c.type === piece.type && c.suit === piece.suit);
-                }
-                if (cardIdx !== -1) {
-                    deck.splice(cardIdx, 1);
-                } else if (deck.length > 46) {
-                    deck.pop();
-                }
-            }
-            while (deck.length > 46) {
-                deck.pop();
-            }
-        }
-
-        return targetSum;
+        return finalSum;
     }
 
     /**
@@ -1223,7 +1228,7 @@ class ChessDurakAI {
     /**
      * Choose the best move for the AI color
      */
-    findBestMove(color, difficulty = 'medium') {
+    async findBestMove(color, difficulty = 'medium') {
         const legalMoves = GameRules.getAllLegalMoves(this.engine.board, color);
         if (legalMoves.length === 0) return null;
 
@@ -1248,6 +1253,8 @@ class ChessDurakAI {
 
         const isHard = (difficulty === 'hard');
         const depth = isHard ? 3 : 2;
+        const timeLimitMs = isHard ? 1500 : 800;
+        const startTime = Date.now();
 
         // Order moves so alpha-beta cuts off subtrees effectively
         const orderedMoves = this.orderMoves(this.engine.board, legalMoves, color, isHard);
@@ -1256,7 +1263,17 @@ class ChessDurakAI {
         let bestScore = -Infinity;
         const opponentColor = color === 'white' ? 'black' : 'white';
 
-        for (const move of orderedMoves) {
+        for (let i = 0; i < orderedMoves.length; i++) {
+            const move = orderedMoves[i];
+
+            // If time limit reached and at least one root move was evaluated, stop search
+            if (i > 0 && (Date.now() - startTime) >= timeLimitMs) {
+                break;
+            }
+
+            // Yield execution to keep UI responsive
+            await new Promise(r => setTimeout(r, 0));
+
             // Simulate move
             const simBoard = this.engine.board.clone();
             const movingPiece = simBoard.getPiece(move.from.r, move.from.c);
@@ -1271,7 +1288,8 @@ class ChessDurakAI {
                 movingPiece.type = 'Q';
             }
 
-            const score = this.minimax(simBoard, depth - 1, -Infinity, Infinity, false, color, opponentColor, isHard);
+            // Root alpha cutoff: pass alpha = bestScore
+            const score = this.minimax(simBoard, depth - 1, bestScore, Infinity, false, color, opponentColor, isHard);
 
             if (score > bestScore) {
                 bestScore = score;
@@ -1279,7 +1297,7 @@ class ChessDurakAI {
             }
         }
 
-        const finalMove = bestMove || legalMoves[0];
+        const finalMove = bestMove || orderedMoves[0] || legalMoves[0];
 
         if (finalMove && finalMove.piece.type === 'P' && (finalMove.to.r === 0 || finalMove.to.r === 7)) {
             finalMove.promotionChoice = {
@@ -1517,6 +1535,8 @@ class ChessDurakApp {
         this.hintSquares = null;       // { from: {r,c}, to: {r,c} }
         this.tutorialStep = 1;
         this.animatedPieceIds = new Set(); // Track pieces that already animated spawn
+        this.aiTimer = null;           // Timeout id for AI turn
+        this.gameToken = 0;            // Game session token to prevent race conditions
 
         this.initDOMElements();
         this.bindEvents();
@@ -1803,9 +1823,16 @@ class ChessDurakApp {
         this.dom.tutorialNextBtn.textContent = (this.tutorialStep === 4) ? 'Понятно, играть!' : 'Далее →';
     }
 
-    showTutorialHint() {
+    async showTutorialHint() {
         if (this.isAiThinking) return;
-        const bestMove = this.ai.findBestMove(this.engine.turn, 'hard');
+        this.isAiThinking = true;
+        let bestMove = null;
+        try {
+            bestMove = await this.ai.findBestMove(this.engine.turn, 'hard');
+        } finally {
+            this.isAiThinking = false;
+        }
+
         if (!bestMove) {
             this.dom.tutorialTipText.textContent = 'Нет доступных ходов.';
             return;
@@ -1854,6 +1881,11 @@ class ChessDurakApp {
         if (this.gameMode === 'tutorial') {
             this.dom.tutorialTipText.textContent = '↩ Ход успешно отменён! Вы можете попробовать другой вариант.';
         }
+
+        // If after undo it is AI's turn, trigger AI
+        if (this.isAiTurn()) {
+            this.checkTriggerAI();
+        }
     }
 
     isAiTurn() {
@@ -1886,11 +1918,17 @@ class ChessDurakApp {
     }
 
     startNewGame() {
+        if (this.aiTimer) {
+            clearTimeout(this.aiTimer);
+            this.aiTimer = null;
+        }
+        this.gameToken++;
+        this.isAiThinking = false;
+
         this.engine.startNewGame();
         this.selectedSquare = null;
         this.legalMoves = [];
         this.hintSquares = null;
-        this.isAiThinking = false;
         this.animatedPieceIds.clear();
         this.dom.historyTableBody.innerHTML = '';
         this.dom.victoryModal.classList.remove('open');
@@ -2207,18 +2245,45 @@ class ChessDurakApp {
     }
 
     checkTriggerAI() {
-        const isAiTurn = (this.gameMode === 'ai-white' && this.engine.turn === 'black') ||
-                         (this.gameMode === 'ai-black' && this.engine.turn === 'white');
+        if (this.aiTimer) {
+            clearTimeout(this.aiTimer);
+            this.aiTimer = null;
+        }
 
+        const isAiTurn = this.isAiTurn();
         if (isAiTurn && this.engine.status !== 'checkmate' && this.engine.status !== 'stalemate') {
             this.isAiThinking = true;
             this.dom.bannerText.textContent = `Компьютер думает... 🤔`;
+            const currentToken = this.gameToken;
 
-            setTimeout(() => {
-                const bestMove = this.ai.findBestMove(this.engine.turn, this.difficulty);
-                this.isAiThinking = false;
-                if (bestMove) {
-                    this.executeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c, bestMove.promotionChoice);
+            this.aiTimer = setTimeout(async () => {
+                this.aiTimer = null;
+
+                // Validate state before making move: token matches, still AI turn, game not over
+                if (this.gameToken !== currentToken) return;
+                if (!this.isAiTurn()) {
+                    this.isAiThinking = false;
+                    return;
+                }
+                if (this.engine.status === 'checkmate' || this.engine.status === 'stalemate') {
+                    this.isAiThinking = false;
+                    return;
+                }
+
+                try {
+                    const bestMove = await this.ai.findBestMove(this.engine.turn, this.difficulty);
+                    // Check again after async calculation
+                    if (this.gameToken !== currentToken) return;
+                    if (!this.isAiTurn()) return;
+                    if (this.engine.status === 'checkmate' || this.engine.status === 'stalemate') return;
+
+                    if (bestMove) {
+                        this.executeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c, bestMove.promotionChoice);
+                    }
+                } finally {
+                    if (this.gameToken === currentToken) {
+                        this.isAiThinking = false;
+                    }
                 }
             }, 650);
         }
