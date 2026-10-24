@@ -1,6 +1,8 @@
-﻿/**
+/**
  * Chess Durak - Complete All-in-One Game Engine & Controller
- * Works both via file:// (double-click in explorer) and HTTP servers
+ * Works both via file:// (double-click in explorer) and HTTP servers.
+ * Google Fonts are loaded from the internet; without a network connection
+ * the game keeps working with the fallback font stack from style.css.
  */
 
 /**
@@ -858,8 +860,9 @@ class GameEngine {
         this.capturedWhite = [];
         this.capturedBlack = [];
         this.moveHistory = [];
-        this.status = 'playing'; // 'playing' | 'check' | 'checkmate' | 'stalemate'
+        this.status = 'playing'; // 'playing' | 'check' | 'checkmate' | 'stalemate' | 'repetition'
         this.winner = null;      // 'white' | 'black' | 'draw' | null
+        this.drawReason = null;  // 'stalemate' | 'agreement' | null
         this.lastMove = null;
         this.spawnEvents = [];   // Log of newly spawned pieces
         this.snapshots = [];     // State snapshots for undo
@@ -879,6 +882,7 @@ class GameEngine {
         this.moveHistory = [];
         this.status = 'playing';
         this.winner = null;
+        this.drawReason = null;
         this.lastMove = null;
         this.spawnEvents = [];
         this.snapshots = [];
@@ -890,6 +894,15 @@ class GameEngine {
     }
 
     /**
+     * True when the current status means the game is over (no further moves allowed)
+     */
+    isGameOver() {
+        return this.status === 'checkmate' ||
+               this.status === 'stalemate' ||
+               this.status === 'repetition';
+    }
+
+    /**
      * Creates a unique canonical key for the current game position
      */
     getPositionKey() {
@@ -898,7 +911,12 @@ class GameEngine {
             for (let c = 0; c < 8; c++) {
                 const p = this.board.grid[r][c];
                 if (p) {
-                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''};`;
+                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''}`;
+                    // Pawn's two-square right depends on hasMoved, so it is part of the position
+                    if (p.type === 'P') {
+                        key += `H${p.hasMoved ? 1 : 0}`;
+                    }
+                    key += ';';
                 }
             }
         }
@@ -909,6 +927,10 @@ class GameEngine {
         key += '|B_RES:';
         for (const p of this.blackReserve) {
             key += `${p.type}${p.suit}${p.squareColor || ''};`;
+        }
+        key += '|DELAY:';
+        for (const d of this.delayedSpawns) {
+            key += `${d.player}:${d.piece.type}${d.piece.suit || 'X'}${d.piece.squareColor || ''};`;
         }
         return key;
     }
@@ -931,6 +953,7 @@ class GameEngine {
         this.moveHistory = prev.moveHistory;
         this.status = prev.status;
         this.winner = prev.winner;
+        this.drawReason = prev.drawReason ?? null;
         this.lastMove = prev.lastMove;
         this.spawnEvents = [];
         this.delayedSpawns = prev.delayedSpawns ? prev.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })) : [];
@@ -944,7 +967,7 @@ class GameEngine {
      * Returns result object with move details
      */
     makeMove(fromR, fromC, toR, toC, promotionChoice = null) {
-        if (this.status === 'checkmate' || this.status === 'stalemate') {
+        if (this.isGameOver()) {
             return { success: false, reason: 'Game over' };
         }
 
@@ -971,6 +994,7 @@ class GameEngine {
             moveHistory: [...this.moveHistory],
             status: this.status,
             winner: this.winner,
+            drawReason: this.drawReason,
             lastMove: this.lastMove ? { ...this.lastMove } : null,
             delayedSpawns: this.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })),
             positionHistory: { ...this.positionHistory }
@@ -1010,8 +1034,8 @@ class GameEngine {
             }
         }
 
-        // 3. Handle Capture and Opponent Bank Respawn / Reserve
-        let spawnedForOpponent = null;
+        // 3. Handle Capture and Bank Draw (placement is deferred: reserves get priority)
+        let bankPiece = null;
         if (capturedPiece) {
             if (capturedPiece.color === 'white') {
                 this.capturedWhite.push(capturedPiece);
@@ -1019,136 +1043,36 @@ class GameEngine {
                 this.capturedBlack.push(capturedPiece);
             }
 
-            // Opponent draws a replacement card from bank
+            // Opponent draws a replacement card from the bank
             if (this.deck.length > 0) {
                 const card = this.deck.pop();
-                const replacementPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
-                const baseRow = opponentColor === 'white' ? 7 : 0;
-                const emptyCols = this.board.getEmptyBaseCols(baseRow);
-                let candidateCols = emptyCols;
-                if (replacementPiece.type === 'B') {
-                    candidateCols = emptyCols.filter(c => ((baseRow + c) % 2 === 0 ? 'light' : 'dark') === replacementPiece.squareColor);
-                }
-
-                if (candidateCols.length > 0) {
-                    // Random empty square on base rank matching square color
-                    const chosenCol = candidateCols[Math.floor(Math.random() * candidateCols.length)];
-
-                    // Check if spawning this piece immediately gives check to movingColor's king
-                    this.board.setPiece(baseRow, chosenCol, replacementPiece);
-                    const givesCheck = GameRules.isKingInCheck(this.board, movingColor);
-                    this.board.removePiece(baseRow, chosenCol);
-
-                    if (givesCheck) {
-                        // Rule: "Фигура, что при появлении может дать шах королю, появляется через 1 ход, т.е. после хода игрока у которого она должна появится"
-                        this.delayedSpawns.push({
-                            piece: replacementPiece,
-                            player: opponentColor
-                        });
-                        this.spawnEvents.push({
-                            piece: replacementPiece,
-                            player: opponentColor,
-                            type: 'delayed_check_queued'
-                        });
-                    } else {
-                        this.board.setPiece(baseRow, chosenCol, replacementPiece);
-                        spawnedForOpponent = {
-                            piece: replacementPiece,
-                            r: baseRow,
-                            c: chosenCol,
-                            type: 'bank_spawn'
-                        };
-                        this.spawnEvents.push(spawnedForOpponent);
-                    }
-                } else {
-                    // Base rank has no matching available slot -> goes to reserve
-                    if (opponentColor === 'white') {
-                        this.whiteReserve.push(replacementPiece);
-                    } else {
-                        this.blackReserve.push(replacementPiece);
-                    }
-                    this.spawnEvents.push({
-                        piece: replacementPiece,
-                        type: 'reserve_queued'
-                    });
-                }
+                bankPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
             }
         }
 
         // 4. Handle Moving Player's Delayed Spawns (Rule: appears after the player's move)
         const movingBaseRow = movingColor === 'white' ? 7 : 0;
+        const preferCol = fromR === movingBaseRow ? fromC : null;
         const remainingDelayed = [];
         for (const delayed of this.delayedSpawns) {
             if (delayed.player === movingColor) {
-                const emptyCols = this.board.getEmptyBaseCols(movingBaseRow);
-                let candidateCols = emptyCols;
-                if (delayed.piece.type === 'B') {
-                    candidateCols = emptyCols.filter(c => ((movingBaseRow + c) % 2 === 0 ? 'light' : 'dark') === delayed.piece.squareColor);
-                }
-
-                if (candidateCols.length > 0) {
-                    const chosenCol = candidateCols[Math.floor(Math.random() * candidateCols.length)];
-                    this.board.setPiece(movingBaseRow, chosenCol, delayed.piece);
-                    this.spawnEvents.push({
-                        piece: delayed.piece,
-                        r: movingBaseRow,
-                        c: chosenCol,
-                        type: 'delayed_spawn_placed'
-                    });
-                } else {
-                    if (movingColor === 'white') {
-                        this.whiteReserve.push(delayed.piece);
-                    } else {
-                        this.blackReserve.push(delayed.piece);
-                    }
-                    this.spawnEvents.push({
-                        piece: delayed.piece,
-                        type: 'reserve_queued'
-                    });
-                }
+                this.tryPlaceDelayedSpawn(delayed, movingColor, preferCol);
             } else {
                 remainingDelayed.push(delayed);
             }
         }
         this.delayedSpawns = remainingDelayed;
 
-        // 5. Handle Moving Player's Reserve Auto-Spawn
-        const reserve = movingColor === 'white' ? this.whiteReserve : this.blackReserve;
-        if (reserve.length > 0) {
-            const emptyCols = this.board.getEmptyBaseCols(movingBaseRow);
-            if (emptyCols.length > 0) {
-                let candidateIdx = -1;
-                let candidateCol = null;
+        // 5. Deploy reserves for BOTH sides after every move (repeatedly, while
+        //    a matching empty base-rank square remains). Reserves always get
+        //    priority over a freshly drawn bank piece.
+        this.deployReserves(movingColor, preferCol);
+        this.deployReserves(opponentColor);
 
-                for (let i = 0; i < reserve.length; i++) {
-                    const p = reserve[i];
-                    let validCols = emptyCols;
-                    if (p.type === 'B') {
-                        validCols = emptyCols.filter(c => ((movingBaseRow + c) % 2 === 0 ? 'light' : 'dark') === p.squareColor);
-                    }
-                    if (validCols.length > 0) {
-                        candidateIdx = i;
-                        // Prefer square vacated by moving piece if it's on base row and valid
-                        if (fromR === movingBaseRow && validCols.includes(fromC)) {
-                            candidateCol = fromC;
-                        } else {
-                            candidateCol = validCols[0];
-                        }
-                        break;
-                    }
-                }
-
-                if (candidateIdx !== -1) {
-                    const [reservePiece] = reserve.splice(candidateIdx, 1);
-                    this.board.setPiece(movingBaseRow, candidateCol, reservePiece);
-                    this.spawnEvents.push({
-                        piece: reservePiece,
-                        r: movingBaseRow,
-                        c: candidateCol,
-                        type: 'reserve_spawn'
-                    });
-                }
-            }
+        // 5b. Only now place the bank replacement drawn in step 3, so that
+        //     reservists are never bypassed by a new card.
+        if (bankPiece) {
+            this.placeBankPiece(bankPiece, opponentColor);
         }
 
         // 6. Check Game Status for Opponent
@@ -1157,6 +1081,9 @@ class GameEngine {
 
         let moveNotation = this.formatNotation(movingPieceType, movingPieceSuit, piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0);
 
+        // A move clears any previous draw reason; only a stalemate below can set it again
+        this.drawReason = null;
+
         if (opponentMoves.length === 0) {
             if (isOpponentInCheck) {
                 this.status = 'checkmate';
@@ -1164,6 +1091,7 @@ class GameEngine {
             } else {
                 this.status = 'stalemate';
                 this.winner = 'draw';
+                this.drawReason = 'stalemate';
             }
         } else if (isOpponentInCheck) {
             this.status = 'check';
@@ -1199,6 +1127,151 @@ class GameEngine {
         };
     }
 
+    /**
+     * Finds a suitable empty base-rank column for a piece of `playerColor`.
+     * Bishops additionally require a square of their own color.
+     * Returns null when no suitable square is free.
+     */
+    findBaseColumn(playerColor, piece, preferCol = null) {
+        const baseRow = playerColor === 'white' ? 7 : 0;
+        let cols = this.board.getEmptyBaseCols(baseRow);
+        if (piece.type === 'B') {
+            cols = cols.filter(c => ((baseRow + c) % 2 === 0 ? 'light' : 'dark') === piece.squareColor);
+        }
+        if (cols.length === 0) return null;
+        if (preferCol !== null && cols.includes(preferCol)) return preferCol;
+        return cols[Math.floor(Math.random() * cols.length)];
+    }
+
+    /**
+     * Checks whether the appearing `piece` itself attacks the enemy king from (r, c).
+     * A check that already existed (e.g. created by the move that triggered the spawn)
+     * is irrelevant: only the piece's own attacks count, so two checking pieces
+     * cannot appear at the same time.
+     */
+    wouldGiveNewCheck(piece, r, c, playerColor) {
+        const enemyColor = playerColor === 'white' ? 'black' : 'white';
+        const enemyKing = this.board.findKing(enemyColor);
+        if (!enemyKing) return false;
+
+        this.board.setPiece(r, c, piece);
+        const attacksKing = GameRules
+            .getPseudoLegalMoves(this.board, r, c)
+            .some(m => m.r === enemyKing.r && m.c === enemyKing.c);
+        this.board.removePiece(r, c);
+
+        return attacksKing;
+    }
+
+    /**
+     * Puts a delayed spawn onto the base rank, or queues it to the reserve when no square is free.
+     */
+    tryPlaceDelayedSpawn(delayed, playerColor, preferCol = null) {
+        const col = this.findBaseColumn(playerColor, delayed.piece, preferCol);
+        if (col === null) {
+            (playerColor === 'white' ? this.whiteReserve : this.blackReserve).push(delayed.piece);
+            this.spawnEvents.push({
+                piece: delayed.piece,
+                player: playerColor,
+                type: 'reserve_queued'
+            });
+            return;
+        }
+
+        const baseRow = playerColor === 'white' ? 7 : 0;
+        this.board.setPiece(baseRow, col, delayed.piece);
+        this.spawnEvents.push({
+            piece: delayed.piece,
+            r: baseRow,
+            c: col,
+            type: 'delayed_spawn_placed'
+        });
+    }
+
+    /**
+     * Deploys the whole reserve of `playerColor` onto its base rank, one suitable piece
+     * after another, for as long as free squares exist.
+     * A reserve piece that would give check on appearance is delayed by one own move.
+     */
+    deployReserves(playerColor, preferCol = null) {
+        const reserve = playerColor === 'white' ? this.whiteReserve : this.blackReserve;
+        const baseRow = playerColor === 'white' ? 7 : 0;
+
+        while (reserve.length > 0) {
+            let chosenIdx = -1;
+            let chosenCol = null;
+
+            for (let i = 0; i < reserve.length; i++) {
+                const col = this.findBaseColumn(playerColor, reserve[i], i === 0 ? preferCol : null);
+                if (col !== null) {
+                    chosenIdx = i;
+                    chosenCol = col;
+                    break;
+                }
+            }
+
+            // No reservist can be placed (base rank full or bishop colors exhausted)
+            if (chosenIdx === -1) break;
+
+            const piece = reserve.splice(chosenIdx, 1)[0];
+
+            if (this.wouldGiveNewCheck(piece, baseRow, chosenCol, playerColor)) {
+                // Rule: a piece that would give check on appearance is delayed by one own move
+                this.delayedSpawns.push({ piece, player: playerColor });
+                this.spawnEvents.push({
+                    piece,
+                    player: playerColor,
+                    type: 'delayed_check_queued'
+                });
+            } else {
+                this.board.setPiece(baseRow, chosenCol, piece);
+                this.spawnEvents.push({
+                    piece,
+                    r: baseRow,
+                    c: chosenCol,
+                    type: 'reserve_spawn'
+                });
+            }
+        }
+    }
+
+    /**
+     * Places a freshly drawn bank piece on its owner's base rank,
+     * or queues it to the reserve when the base rank has no suitable square.
+     */
+    placeBankPiece(piece, playerColor) {
+        const col = this.findBaseColumn(playerColor, piece);
+        if (col === null) {
+            (playerColor === 'white' ? this.whiteReserve : this.blackReserve).push(piece);
+            this.spawnEvents.push({
+                piece,
+                player: playerColor,
+                type: 'reserve_queued'
+            });
+            return;
+        }
+
+        const baseRow = playerColor === 'white' ? 7 : 0;
+        if (this.wouldGiveNewCheck(piece, baseRow, col, playerColor)) {
+            // Rule: a piece that would give check on appearance is delayed by one own move
+            this.delayedSpawns.push({ piece, player: playerColor });
+            this.spawnEvents.push({
+                piece,
+                player: playerColor,
+                type: 'delayed_check_queued'
+            });
+        } else {
+            this.board.setPiece(baseRow, col, piece);
+            this.spawnEvents.push({
+                piece,
+                player: playerColor,
+                r: baseRow,
+                c: col,
+                type: 'bank_spawn'
+            });
+        }
+    }
+
     formatNotation(originalType, originalSuit, currentPiece, fromR, fromC, toR, toC, captured, isPromotion, isCheck, isCheckmate) {
         const fromNot = Board.toNotation(fromR, fromC);
         const toNot = Board.toNotation(toR, toC);
@@ -1220,6 +1293,9 @@ class GameEngine {
 /**
  * Chess Durak - Intelligent AI Engine
  */
+// A captured piece is replaced from the bank, so a capture is worth only
+// about 70% of the victim's nominal value in the search.
+const CAPTURE_REPLACEMENT_FACTOR = 0.7;
 class ChessDurakAI {
     constructor(engine) {
         this.engine = engine;
@@ -1277,19 +1353,25 @@ class ChessDurakAI {
             // Simulate move
             const simBoard = this.engine.board.clone();
             const movingPiece = simBoard.getPiece(move.from.r, move.from.c);
+            if (!movingPiece) continue; // Stale move (board changed while searching)
+
+            const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
 
             simBoard.removePiece(move.to.r, move.to.c);
             simBoard.removePiece(move.from.r, move.from.c);
             simBoard.setPiece(move.to.r, move.to.c, movingPiece);
-            if (movingPiece) movingPiece.hasMoved = true;
+            movingPiece.hasMoved = true;
 
-            // Handle promotion in sim
+            // Handle promotion in sim: queen, with the same suit choice as the real move
             if (movingPiece.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
-                movingPiece.type = 'Q';
+                this.applySimulatedPromotion(movingPiece, simBoard, opponentColor);
             }
 
+            // The victim is replaced from the bank, so only 70% of its value counts
+            const materialAdjustment = this.captureAdjustment(capturedPiece, true);
+
             // Root alpha cutoff: pass alpha = bestScore
-            const score = this.minimax(simBoard, depth - 1, bestScore, Infinity, false, color, opponentColor, isHard);
+            const score = this.minimax(simBoard, depth - 1, bestScore, Infinity, false, color, opponentColor, isHard, materialAdjustment);
 
             if (score > bestScore) {
                 bestScore = score;
@@ -1299,7 +1381,7 @@ class ChessDurakAI {
 
         const finalMove = bestMove || orderedMoves[0] || legalMoves[0];
 
-        if (finalMove && finalMove.piece.type === 'P' && (finalMove.to.r === 0 || finalMove.to.r === 7)) {
+        if (finalMove && finalMove.piece && finalMove.piece.type === 'P' && (finalMove.to.r === 0 || finalMove.to.r === 7)) {
             finalMove.promotionChoice = {
                 type: 'Q',
                 suit: this.getBestPromotionSuit(this.engine.board, opponentColor)
@@ -1375,7 +1457,27 @@ class ChessDurakAI {
         return bestSuit;
     }
 
-    minimax(board, depth, alpha, beta, isMaximizing, myColor, opponentColor, isHard) {
+    /**
+     * Material correction for a capture, from myColor's point of view.
+     * myColor gains 0.7 * victim; the opponent gains 0.7 * victim on its own captures.
+     */
+    captureAdjustment(capturedPiece, isMaximizing) {
+        if (!capturedPiece) return 0;
+        const replacementLoss = (1 - CAPTURE_REPLACEMENT_FACTOR) * (PIECE_VALUES[capturedPiece.type] || 0);
+        return isMaximizing ? -replacementLoss : replacementLoss;
+    }
+
+    /**
+     * Simulation-only promotion: always a queen, but with the same suit choice
+     * the real move would make (getBestPromotionSuit).
+     */
+    applySimulatedPromotion(piece, board, promoOpponentColor) {
+        piece.type = 'Q';
+        piece.suit = this.getBestPromotionSuit(board, promoOpponentColor);
+        piece.squareColor = null;
+    }
+
+    minimax(board, depth, alpha, beta, isMaximizing, myColor, opponentColor, isHard, materialAdjustment = 0) {
         const myKingInCheck = GameRules.isKingInCheck(board, myColor);
         const oppKingInCheck = GameRules.isKingInCheck(board, opponentColor);
 
@@ -1389,7 +1491,7 @@ class ChessDurakAI {
         }
 
         if (depth === 0) {
-            return this.evaluateBoard(board, myColor, opponentColor, isHard);
+            return this.evaluateBoard(board, myColor, opponentColor, isHard) + materialAdjustment;
         }
 
         const orderedMoves = isHard ? this.orderMoves(board, legalMoves, currentTurnColor, true) : legalMoves;
@@ -1399,13 +1501,18 @@ class ChessDurakAI {
             for (const move of orderedMoves) {
                 const simBoard = board.clone();
                 const p = simBoard.getPiece(move.from.r, move.from.c);
+                if (!p) continue;
+                const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.from.r, move.from.c);
                 simBoard.setPiece(move.to.r, move.to.c, p);
-                if (p) p.hasMoved = true;
-                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) p.type = 'Q';
+                p.hasMoved = true;
+                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
+                    this.applySimulatedPromotion(p, simBoard, opponentColor);
+                }
+                const nextAdjustment = materialAdjustment + this.captureAdjustment(capturedPiece, true);
 
-                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, false, myColor, opponentColor, isHard);
+                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, false, myColor, opponentColor, isHard, nextAdjustment);
                 maxEval = Math.max(maxEval, evaluation);
                 alpha = Math.max(alpha, evaluation);
                 if (beta <= alpha) break;
@@ -1416,13 +1523,18 @@ class ChessDurakAI {
             for (const move of orderedMoves) {
                 const simBoard = board.clone();
                 const p = simBoard.getPiece(move.from.r, move.from.c);
+                if (!p) continue;
+                const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.to.r, move.to.c);
                 simBoard.removePiece(move.from.r, move.from.c);
                 simBoard.setPiece(move.to.r, move.to.c, p);
-                if (p) p.hasMoved = true;
-                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) p.type = 'Q';
+                p.hasMoved = true;
+                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
+                    this.applySimulatedPromotion(p, simBoard, myColor);
+                }
+                const nextAdjustment = materialAdjustment + this.captureAdjustment(capturedPiece, false);
 
-                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, true, myColor, opponentColor, isHard);
+                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, true, myColor, opponentColor, isHard, nextAdjustment);
                 minEval = Math.min(minEval, evaluation);
                 beta = Math.min(beta, evaluation);
                 if (beta <= alpha) break;
@@ -1672,6 +1784,9 @@ class ChessDurakApp {
                 this.dom.drawOfferModal.classList.remove('open');
                 this.engine.status = 'stalemate';
                 this.engine.winner = 'draw';
+                this.engine.drawReason = 'agreement';
+                // Refresh immediately so the banner shows the draw result
+                this.renderAll();
                 this.showVictoryModal('Ничья!', 'Партия завершена ничьей по соглашению игроков (троекратное повторение позиции).');
             });
         }
@@ -1826,12 +1941,20 @@ class ChessDurakApp {
     async showTutorialHint() {
         if (this.isAiThinking) return;
         this.isAiThinking = true;
+        const gameToken = this.gameToken;
+
         let bestMove = null;
         try {
             bestMove = await this.ai.findBestMove(this.engine.turn, 'hard');
         } finally {
-            this.isAiThinking = false;
+            // Only release the flag if this game session is still the active one
+            if (this.gameToken === gameToken) {
+                this.isAiThinking = false;
+            }
         }
+
+        // A "New Game" (or mode switch) happened while the AI was calculating: discard the result
+        if (this.gameToken !== gameToken) return;
 
         if (!bestMove) {
             this.dom.tutorialTipText.textContent = 'Нет доступных ходов.';
@@ -1842,6 +1965,12 @@ class ChessDurakApp {
         this.renderBoard();
 
         const p = this.engine.board.getPiece(bestMove.from.r, bestMove.from.c);
+        if (!p) {
+            // The piece disappeared (e.g. the position was replaced): drop the stale hint
+            this.hintSquares = null;
+            this.renderBoard();
+            return;
+        }
         const fromNot = Board.toNotation(bestMove.from.r, bestMove.from.c);
         const toNot = Board.toNotation(bestMove.to.r, bestMove.to.c);
         const suitName = p.suit ? SUITS[p.suit].name : 'без масти';
@@ -1962,13 +2091,16 @@ class ChessDurakApp {
 
     renderBoard() {
         this.dom.board.innerHTML = '';
-        this.dom.boardContainer.classList.toggle('flipped', this.isFlipped);
         this.renderCoordinates();
 
         const rows = this.isFlipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
         const cols = this.isFlipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
 
-        const kingInCheck = this.engine.status === 'check' || this.engine.status === 'checkmate';
+        const kingInCheck = !this.engine.drawReason &&
+            (this.engine.status === 'check' || this.engine.status === 'checkmate');
+        // NOTE: 'repetition', 'stalemate' and agreed draws are game-over conditions, never a check,
+        // so the king is not highlighted for them.
+
         const inCheckKingPos = kingInCheck ? this.engine.board.findKing(this.engine.turn) : null;
 
         for (const r of rows) {
@@ -2098,7 +2230,7 @@ class ChessDurakApp {
 
     handleSquareClick(r, c) {
         if (this.isAiThinking) return;
-        if (this.engine.status === 'checkmate' || this.engine.status === 'stalemate') return;
+        if (this.engine.isGameOver()) return;
 
         // Check if it's user's turn in AI mode
         if (this.gameMode === 'ai-white' && this.engine.turn === 'black') return;
@@ -2227,8 +2359,10 @@ class ChessDurakApp {
         if (result.threefold) {
             if (this.gameMode === 'ai-white' || this.gameMode === 'ai-black') {
                 const isPlayerWhite = (this.gameMode === 'ai-white');
-                this.engine.status = 'checkmate';
+                // Dedicated status: it is a loss, but NOT a check/mate (no "МАТ!" banner, no check highlight)
+                this.engine.status = 'repetition';
                 this.engine.winner = isPlayerWhite ? 'black' : 'white';
+                this.renderAll();
                 sounds.check();
                 this.showVictoryModal('Поражение игроку!', 'Зафиксировано троекратное повторение позиции. При игре против ИИ засчитано поражение игроку.');
                 return;
@@ -2251,42 +2385,45 @@ class ChessDurakApp {
         }
 
         const isAiTurn = this.isAiTurn();
-        if (isAiTurn && this.engine.status !== 'checkmate' && this.engine.status !== 'stalemate') {
-            this.isAiThinking = true;
-            this.dom.bannerText.textContent = `Компьютер думает... 🤔`;
-            const currentToken = this.gameToken;
-
-            this.aiTimer = setTimeout(async () => {
-                this.aiTimer = null;
-
-                // Validate state before making move: token matches, still AI turn, game not over
-                if (this.gameToken !== currentToken) return;
-                if (!this.isAiTurn()) {
-                    this.isAiThinking = false;
-                    return;
-                }
-                if (this.engine.status === 'checkmate' || this.engine.status === 'stalemate') {
-                    this.isAiThinking = false;
-                    return;
-                }
-
-                try {
-                    const bestMove = await this.ai.findBestMove(this.engine.turn, this.difficulty);
-                    // Check again after async calculation
-                    if (this.gameToken !== currentToken) return;
-                    if (!this.isAiTurn()) return;
-                    if (this.engine.status === 'checkmate' || this.engine.status === 'stalemate') return;
-
-                    if (bestMove) {
-                        this.executeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c, bestMove.promotionChoice);
-                    }
-                } finally {
-                    if (this.gameToken === currentToken) {
-                        this.isAiThinking = false;
-                    }
-                }
-            }, 650);
+        if (!isAiTurn || this.engine.isGameOver()) {
+            this.isAiThinking = false;
+            return;
         }
+
+        this.isAiThinking = true;
+        this.dom.bannerText.textContent = `Компьютер думает... 🤔`;
+        this.renderPlayerPanels();
+        const currentToken = this.gameToken;
+
+        this.aiTimer = setTimeout(async () => {
+            this.aiTimer = null;
+
+            // Validate state before making move: token matches, still AI turn, game not over
+            if (this.gameToken !== currentToken) return;
+            if (!this.isAiTurn() || this.engine.isGameOver()) {
+                this.isAiThinking = false;
+                this.renderAll();
+                return;
+            }
+
+            try {
+                const bestMove = await this.ai.findBestMove(this.engine.turn, this.difficulty);
+                // Check again after async calculation
+                if (this.gameToken !== currentToken) return;
+                if (!this.isAiTurn() || this.engine.isGameOver()) return;
+
+                if (bestMove) {
+                    this.executeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c, bestMove.promotionChoice);
+                }
+            } finally {
+                if (this.gameToken === currentToken) {
+                    this.isAiThinking = false;
+                    // executeMove() rendered while the "thinking" flag was still set, so the
+                    // banner/panels were skipped. Always refresh them afterwards (mate included).
+                    this.renderAll();
+                }
+            }
+        }, 650);
     }
 
     renderPlayerPanels() {
@@ -2337,10 +2474,21 @@ class ChessDurakApp {
         }
         nameEl.textContent = displayName;
 
+        const isAiSide = (this.gameMode === 'ai-white' && !isWhite) ||
+                         (this.gameMode === 'ai-black' && isWhite);
+
         if (isTurn) {
             const inCheck = this.engine.status === 'check';
-            statusEl.textContent = inCheck ? '⚠️ Король под шахом!' : 'Ваш ход';
-            statusEl.style.color = inCheck ? '#f43f5e' : '#fbbf24';
+            if (inCheck) {
+                statusEl.textContent = '⚠️ Король под шахом!';
+                statusEl.style.color = '#f43f5e';
+            } else if (isAiSide) {
+                statusEl.textContent = this.isAiThinking ? 'Компьютер думает…' : 'Ход компьютера';
+                statusEl.style.color = '#fbbf24';
+            } else {
+                statusEl.textContent = 'Ваш ход';
+                statusEl.style.color = '#fbbf24';
+            }
         } else {
             statusEl.textContent = 'Ожидание хода';
             statusEl.style.color = 'var(--text-secondary)';
@@ -2394,6 +2542,24 @@ class ChessDurakApp {
     renderStatusBanner() {
         if (this.isAiThinking) return;
 
+        const status = this.engine.status;
+
+        // Draws have their own banner text (the modal alone was not enough)
+        if (this.engine.drawReason === 'stalemate') {
+            this.dom.bannerText.textContent = 'Пат. Ничья';
+            return;
+        }
+        if (this.engine.drawReason === 'agreement') {
+            this.dom.bannerText.textContent = 'Ничья по соглашению';
+            return;
+        }
+
+        // Repetition is a loss, but NOT a mate: dedicated banner, no "МАТ!" text
+        if (status === 'repetition') {
+            this.dom.bannerText.textContent = 'Поражение по повторению позиции';
+            return;
+        }
+
         const isWhite = this.engine.turn === 'white';
         let text = isWhite ? 'Ход Белых' : 'Ход Чёрных';
 
@@ -2405,9 +2571,9 @@ class ChessDurakApp {
             text += ` [⏳ Отложено фигур: ${this.engine.delayedSpawns.length}]`;
         }
 
-        if (this.engine.status === 'check') {
+        if (status === 'check') {
             text += ' ⚠️ (ШАХ!)';
-        } else if (this.engine.status === 'checkmate') {
+        } else if (status === 'checkmate') {
             text = `🏆 МАТ! Победа ${this.engine.winner === 'white' ? 'Белых' : 'Чёрных'}`;
         }
 

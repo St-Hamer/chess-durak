@@ -2195,3 +2195,20 @@ body {
         max-height: 50px !important;
     }
 }
+
+/* --------------------------------------------------------------------------
+   Semantic class hooks used by the markup. These declarations match the
+   browser defaults, so the hooks are documented without changing the layout.
+   -------------------------------------------------------------------------- */
+.modal-body,
+.ai-settings-body,
+.player-info,
+.draw-offer-card,
+.tutorial-steps-container {
+    display: block;
+}
+
+.mode-text,
+.btn-icon {
+    display: inline;
+}
