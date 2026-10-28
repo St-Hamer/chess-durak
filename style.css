@@ -438,6 +438,7 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 12px;
+    position: relative;
 }
 
 .board-container {
@@ -661,6 +662,13 @@ body {
     background-color: var(--suit-diamonds);
 }
 
+/* Neutral badge for a suitless piece (after the suit reset) */
+.suit-none {
+    background-color: #4b5563;
+    border-color: #d1d5db;
+    box-shadow: inset 0 0 0 2px rgba(156, 163, 175, 0.4), 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
 .king-crown-badge {
     position: absolute;
     top: 0px;
@@ -688,6 +696,35 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* Transient notification shown over the board (e.g. "Масти сброшены") */
+.game-toast {
+    position: absolute;
+    top: 18px;
+    left: 50%;
+    transform: translate(-50%, -10px);
+    max-width: min(88%, 420px);
+    padding: 9px 22px;
+    border-radius: 999px;
+    background: rgba(24, 18, 12, 0.94);
+    border: 1.5px solid var(--text-gold);
+    color: var(--text-gold);
+    font-size: clamp(0.8rem, 1.9vw, 0.95rem);
+    font-weight: 700;
+    text-align: center;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease, visibility 0.25s;
+    z-index: 40;
+}
+
+.game-toast.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0);
 }
 
 /* ==========================================================================

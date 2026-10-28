@@ -211,6 +211,8 @@ const pieceTypes = ['P', 'N', 'B', 'R', 'Q'];
 /**
  * Precompute all valid 7-piece combinations for every odd sum in [7, 41].
  * Max sum 41 is the highest sum simultaneously achievable by both players from the real 60-card deck.
+ * Combinations list piece types only; dealPiecesFromDeck() later assigns concrete
+ * suited cards so that every hand contains at least one piece of each of the 4 suits.
  */
 const combosBySum = {};
 for (let s = 7; s <= 41; s += 2) combosBySum[s] = [];
@@ -242,10 +244,148 @@ function getRandomStartingPoints() {
     return oddSums[Math.floor(Math.random() * oddSums.length)];
 }
 
+/** Fisher-Yates shuffle that returns a shuffled copy. */
+function shuffledCopy(items) {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+}
+
+const SUIT_IDS = Object.keys(SUITS);
+
+// "BL"/"BD" are light- and dark-squared bishops; the order is scarcest-first,
+// so queens and bishops consume their per-suit slots before the bulk pieces.
+const CARD_CATEGORIES = ['Q', 'BL', 'BD', 'R', 'N', 'P'];
+
+const CATEGORY_SUPPLY_PER_SUIT = { P: 8, N: 2, R: 2, Q: 1, BL: 1, BD: 1 };
+
+/**
+ * Counts piece types in a type-only combination (as produced by genCombos).
+ */
+function countPieceTypes(combo) {
+    const counts = { P: 0, N: 0, B: 0, R: 0, Q: 0 };
+    for (const type of combo) counts[type]++;
+    return counts;
+}
+
+/**
+ * Expands type counts plus bishop color counts into a scarce-first category list.
+ * Bishops are split into BL (light) and BD (dark) so square colors stay legal.
+ */
+function expandCategories(requirements) {
+    const categories = [];
+    for (const category of CARD_CATEGORIES) {
+        const count = requirements[category] || 0;
+        for (let i = 0; i < count; i++) categories.push(category);
+    }
+    return categories;
+}
+
+/**
+ * Enumerates legal bishop color splits for the two hands.
+ * White base rank has 4 light / 3 dark squares, black base rank 3 light / 4 dark,
+ * and the whole deck holds only 4 light and 4 dark bishops.
+ */
+function getBishopDistributions(bishopsWhite, bishopsBlack) {
+    const distributions = [];
+    for (let lW = Math.max(0, bishopsWhite - 3); lW <= Math.min(bishopsWhite, 4); lW++) {
+        const dW = bishopsWhite - lW;
+        for (let lB = Math.max(0, bishopsBlack - 4); lB <= Math.min(bishopsBlack, 3); lB++) {
+            const dB = bishopsBlack - lB;
+            if (lW + lB <= 4 && dW + dB <= 4) {
+                distributions.push({ lW, dW, lB, dB });
+            }
+        }
+    }
+    return distributions;
+}
+
+/**
+ * Backtracking search that assigns a suit to every card of both hands.
+ *
+ * Guarantees:
+ * - each hand gets exactly 7 cards and covers all 4 suits;
+ * - per-suit supplies are respected (8 pawns, 2 knights, 2 rooks, 1 queen,
+ *   1 light bishop, 1 dark bishop);
+ * - the search is exhaustive (suits are tried in random order at every step), so
+ *   `null` means the pair of combinations is genuinely impossible and the caller
+ *   can safely try the next pair.
+ *
+ * Returns { itemsWhite, suitsWhite, itemsBlack, suitsBlack } or null.
+ */
+function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
+    const itemsWhite = expandCategories(requirementsWhite);
+    const itemsBlack = expandCategories(requirementsBlack);
+    if (itemsWhite.length !== 7 || itemsBlack.length !== 7) return null;
+
+    const capacity = {};
+    for (const suit of SUIT_IDS) {
+        capacity[suit] = {};
+        for (const category of CARD_CATEGORIES) {
+            capacity[suit][category] = CATEGORY_SUPPLY_PER_SUIT[category];
+        }
+    }
+
+    const suitsWhite = new Array(7);
+    const suitsBlack = new Array(7);
+    const suitBit = {};
+    SUIT_IDS.forEach((suit, index) => { suitBit[suit] = 1 << index; });
+    const ALL_SUITS = (1 << SUIT_IDS.length) - 1;
+
+    const countBits = (mask) => {
+        let count = 0;
+        for (let m = mask; m; m >>= 1) count += m & 1;
+        return count;
+    };
+
+    const placeBlack = (index, mask) => {
+        if (index === itemsBlack.length) return mask === ALL_SUITS;
+        const category = itemsBlack[index];
+        const slotsLeft = itemsBlack.length - index - 1;
+
+        for (const suit of shuffledCopy(SUIT_IDS)) {
+            if (capacity[suit][category] === 0) continue;
+            const nextMask = mask | suitBit[suit];
+            if (SUIT_IDS.length - countBits(nextMask) > slotsLeft) continue;
+
+            capacity[suit][category]--;
+            suitsBlack[index] = suit;
+            if (placeBlack(index + 1, nextMask)) return true;
+            capacity[suit][category]++;
+        }
+        return false;
+    };
+
+    const placeWhite = (index, mask) => {
+        if (index === itemsWhite.length) return placeBlack(0, 0);
+        const category = itemsWhite[index];
+        const slotsLeft = itemsWhite.length - index - 1;
+
+        for (const suit of shuffledCopy(SUIT_IDS)) {
+            if (capacity[suit][category] === 0) continue;
+            const nextMask = mask | suitBit[suit];
+            if (SUIT_IDS.length - countBits(nextMask) > slotsLeft) continue;
+
+            capacity[suit][category]--;
+            suitsWhite[index] = suit;
+            if (placeWhite(index + 1, nextMask)) return true;
+            capacity[suit][category]++;
+        }
+        return false;
+    };
+
+    if (!placeWhite(0, 0)) return null;
+    return { itemsWhite, suitsWhite, itemsBlack, suitsBlack };
+}
+
 /**
  * Deals 7 suited pieces for White and 7 for Black directly from the real 60-card deck.
  * Guaranteed:
  * - Equal sums for White and Black equal to targetSum (odd, in [7, 41])
+ * - Every hand contains at least one piece of each of the 4 suits
  * - Dealt cards are removed from the deck, leaving exactly 46 cards in deck
  * - Strict deck composition is preserved (no duplicate Q of same suit, etc.)
  * - Bishop squareColor constraints match board geometry (White row 7: max 4 light, 3 dark; Black row 0: max 3 light, 4 dark)
@@ -263,15 +403,24 @@ function dealPiecesFromDeck(deck, targetSum = null) {
         throw new Error(`No valid combinations for target sum ${targetSum}`);
     }
 
-    const shuffledW = [...validCombos].sort(() => Math.random() - 0.5);
-    const shuffledB = [...validCombos].sort(() => Math.random() - 0.5);
+    // Group the real deck by category so a solved suit assignment can draw
+    // concrete cards without ever duplicating one.
+    const cardsByCategory = new Map();
+    for (const card of deck) {
+        const key = card.type === 'B'
+            ? `B|${card.suit}|${card.squareColor}`
+            : `${card.type}|${card.suit}`;
+        if (!cardsByCategory.has(key)) cardsByCategory.set(key, []);
+        cardsByCategory.get(key).push(card);
+    }
 
-    for (const cW of shuffledW) {
-        for (const cB of shuffledB) {
-            const countW = { P: 0, N: 0, B: 0, R: 0, Q: 0 };
-            const countB = { P: 0, N: 0, B: 0, R: 0, Q: 0 };
-            for (const t of cW) countW[t]++;
-            for (const t of cB) countB[t]++;
+    const shuffledWhite = shuffledCopy(validCombos);
+    const shuffledBlack = shuffledCopy(validCombos);
+
+    for (const comboWhite of shuffledWhite) {
+        const countW = countPieceTypes(comboWhite);
+        for (const comboBlack of shuffledBlack) {
+            const countB = countPieceTypes(comboBlack);
 
             let possible = true;
             for (const t of pieceTypes) {
@@ -283,78 +432,61 @@ function dealPiecesFromDeck(deck, targetSum = null) {
             }
             if (!possible) continue;
 
-            const bW = countW['B'];
-            const bB = countB['B'];
-            const possibleDist = [];
-            for (let lW = Math.max(0, bW - 3); lW <= Math.min(bW, 4); lW++) {
-                const dW = bW - lW;
-                for (let lB = Math.max(0, bB - 4); lB <= Math.min(bB, 3); lB++) {
-                    const dB = bB - lB;
-                    if (lW + lB <= 4 && dW + dB <= 4) {
-                        possibleDist.push({ lW, dW, lB, dB });
+            const distributions = shuffledCopy(getBishopDistributions(countW.B, countB.B));
+
+            for (const dist of distributions) {
+                const reqW = {
+                    P: countW.P, N: countW.N, R: countW.R, Q: countW.Q,
+                    BL: dist.lW, BD: dist.dW
+                };
+                const reqB = {
+                    P: countB.P, N: countB.N, R: countB.R, Q: countB.Q,
+                    BL: dist.lB, BD: dist.dB
+                };
+
+                const assignment = assignSuitsToBothHands(reqW, reqB);
+                if (!assignment) continue;
+
+                const chosenCards = new Set();
+                const takeCard = (item, suit) => {
+                    const key = item === 'BL'
+                        ? `B|${suit}|light`
+                        : (item === 'BD' ? `B|${suit}|dark` : `${item}|${suit}`);
+                    const pile = cardsByCategory.get(key);
+                    if (!pile || pile.length === 0) {
+                        throw new Error(`Deck has no ${key} card left for target sum ${targetSum}`);
                     }
+                    const card = pile.pop();
+                    chosenCards.add(card);
+                    return card;
+                };
+
+                const whiteCards = assignment.itemsWhite.map(
+                    (item, i) => takeCard(item, assignment.suitsWhite[i])
+                );
+                const blackCards = assignment.itemsBlack.map(
+                    (item, i) => takeCard(item, assignment.suitsBlack[i])
+                );
+
+                // Remaining cards form the remaining deck
+                const remainingDeck = deck.filter(card => !chosenCards.has(card));
+                for (let i = remainingDeck.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [remainingDeck[i], remainingDeck[j]] = [remainingDeck[j], remainingDeck[i]];
                 }
-            }
-            if (possibleDist.length === 0) continue;
 
-            const dist = possibleDist[Math.floor(Math.random() * possibleDist.length)];
+                deck.length = 0;
+                deck.push(...remainingDeck);
 
-            // Separate current deck into cards by category
-            const lightBishops = [];
-            const darkBishops = [];
-            const othersByType = { P: [], N: [], R: [], Q: [] };
-
-            for (let i = 0; i < deck.length; i++) {
-                const card = deck[i];
-                if (card.type === 'B') {
-                    if (card.squareColor === 'light') lightBishops.push(card);
-                    else darkBishops.push(card);
-                } else {
-                    othersByType[card.type].push(card);
+                if (deck.length !== 46) {
+                    throw new Error(`Deck invariant violated: remaining cards count is ${deck.length}, expected 46`);
                 }
+
+                const whitePieces = whiteCards.map(c => createPiece(c.type, 'white', c.suit, c.squareColor || null));
+                const blackPieces = blackCards.map(c => createPiece(c.type, 'black', c.suit, c.squareColor || null));
+
+                return { targetSum, whitePieces, blackPieces };
             }
-
-            // Draw White cards
-            const whiteCards = [];
-            for (let i = 0; i < dist.lW; i++) whiteCards.push(lightBishops.pop());
-            for (let i = 0; i < dist.dW; i++) whiteCards.push(darkBishops.pop());
-            for (const t of ['P', 'N', 'R', 'Q']) {
-                for (let i = 0; i < countW[t]; i++) whiteCards.push(othersByType[t].pop());
-            }
-
-            // Draw Black cards
-            const blackCards = [];
-            for (let i = 0; i < dist.lB; i++) blackCards.push(lightBishops.pop());
-            for (let i = 0; i < dist.dB; i++) blackCards.push(darkBishops.pop());
-            for (const t of ['P', 'N', 'R', 'Q']) {
-                for (let i = 0; i < countB[t]; i++) blackCards.push(othersByType[t].pop());
-            }
-
-            // Remaining cards form the remaining deck
-            const remainingDeck = [
-                ...lightBishops,
-                ...darkBishops,
-                ...othersByType.P,
-                ...othersByType.N,
-                ...othersByType.R,
-                ...othersByType.Q
-            ];
-            for (let i = remainingDeck.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [remainingDeck[i], remainingDeck[j]] = [remainingDeck[j], remainingDeck[i]];
-            }
-
-            deck.length = 0;
-            deck.push(...remainingDeck);
-
-            if (deck.length !== 46) {
-                throw new Error(`Deck invariant violated: remaining cards count is ${deck.length}, expected 46`);
-            }
-
-            const whitePieces = whiteCards.map(c => createPiece(c.type, 'white', c.suit, c.squareColor || null));
-            const blackPieces = blackCards.map(c => createPiece(c.type, 'black', c.suit, c.squareColor || null));
-
-            return { targetSum, whitePieces, blackPieces };
         }
     }
 
@@ -386,7 +518,8 @@ const PIECE_SVGS = {
  */
 function renderPieceElement(piece) {
     const el = document.createElement('div');
-    el.className = `chess-piece ${piece.color}-piece ${piece.suit ? 'has-suit' : 'is-king'}`;
+    const isKing = piece.type === 'K';
+    el.className = `chess-piece ${piece.color}-piece${piece.suit ? ' has-suit' : ''}${isKing ? ' is-king' : ''}`;
     el.dataset.id = piece.id;
 
     const svgContainer = document.createElement('div');
@@ -394,23 +527,30 @@ function renderPieceElement(piece) {
     svgContainer.innerHTML = PIECE_SVGS[piece.color][piece.type];
     el.appendChild(svgContainer);
 
+    let bishopDesc = '';
+    if (piece.type === 'B' && piece.squareColor) {
+        bishopDesc = piece.squareColor === 'light' ? ' (белопольный)' : ' (чернопольный)';
+    }
+
     if (piece.suit && SUITS[piece.suit]) {
         const suitInfo = SUITS[piece.suit];
         const badge = document.createElement('div');
         badge.className = `suit-badge ${suitInfo.badgeClass}`;
         badge.textContent = suitInfo.symbol;
-        let bishopDesc = '';
-        if (piece.type === 'B' && piece.squareColor) {
-            bishopDesc = piece.squareColor === 'light' ? ' (белопольный)' : ' (чернопольный)';
-        }
         badge.title = `${PIECE_NAMES[piece.type]}${bishopDesc} (${suitInfo.name})`;
         el.appendChild(badge);
-    } else if (piece.type === 'K') {
+    } else if (isKing) {
         const crown = document.createElement('div');
         crown.className = 'king-crown-badge';
         crown.innerHTML = '★';
         crown.title = 'Король (любая масть)';
         el.appendChild(crown);
+    } else {
+        // A suitless piece (after the suit reset) gets a neutral empty badge.
+        const badge = document.createElement('div');
+        badge.className = 'suit-badge suit-none';
+        badge.title = `${PIECE_NAMES[piece.type]}${bishopDesc} (без масти)`;
+        el.appendChild(badge);
     }
 
     return el;
@@ -686,6 +826,9 @@ class GameRules {
             if (targetPiece.type === 'K') return true;
             // King attacker has no suit -> King can capture any enemy piece!
             if (type === 'K') return true;
+            // After the suit reset every board piece is suitless: any piece may
+            // capture any enemy piece regardless of its (now absent) suit.
+            if (suit === null && targetPiece.suit === null) return true;
             // Otherwise, must match suit!
             return targetPiece.suit === suit;
         };
@@ -862,13 +1005,16 @@ class GameEngine {
         this.moveHistory = [];
         this.status = 'playing'; // 'playing' | 'check' | 'checkmate' | 'stalemate' | 'repetition'
         this.winner = null;      // 'white' | 'black' | 'draw' | null
-        this.drawReason = null;  // 'stalemate' | 'agreement' | null
+        this.drawReason = null;  // 'stalemate' | 'agreement' | 'suits_agreement' | null
         this.lastMove = null;
         this.spawnEvents = [];   // Log of newly spawned pieces
         this.snapshots = [];     // State snapshots for undo
         this.delayedSpawns = []; // Pieces delayed by 1 turn because spawning gave check
         this.positionHistory = {}; // Key -> count for threefold repetition
         this.startingPoints = 0; // Total starting points per player
+        this.suitsResolved = false;  // The empty-bank suit offer was already resolved this game
+        this.suitsReset = false;     // All board pieces lost their suits
+        this.pendingSuitOffer = false; // Waiting for the player's accept/decline decision
     }
 
     startNewGame(targetSum = null) {
@@ -888,6 +1034,9 @@ class GameEngine {
         this.snapshots = [];
         this.delayedSpawns = [];
         this.positionHistory = {};
+        this.suitsResolved = false;
+        this.suitsReset = false;
+        this.pendingSuitOffer = false;
 
         const initialKey = this.getPositionKey();
         this.positionHistory[initialKey] = 1;
@@ -936,6 +1085,17 @@ class GameEngine {
     }
 
     /**
+     * Records the current position in the threefold repetition history and
+     * returns its key. Used after a suit reset, because the resulting position
+     * is new and its first appearance must be counted.
+     */
+    recordCurrentPosition() {
+        const key = this.getPositionKey();
+        this.positionHistory[key] = (this.positionHistory[key] || 0) + 1;
+        return key;
+    }
+
+    /**
      * Undo last executed move and restore previous board state
      */
     undoMove() {
@@ -945,11 +1105,11 @@ class GameEngine {
         const prev = this.snapshots.pop();
         this.board = prev.board;
         this.turn = prev.turn;
-        this.deck = prev.deck;
-        this.whiteReserve = prev.whiteReserve;
-        this.blackReserve = prev.blackReserve;
-        this.capturedWhite = prev.capturedWhite;
-        this.capturedBlack = prev.capturedBlack;
+        this.deck = prev.deck ? [...prev.deck] : [];
+        this.whiteReserve = prev.whiteReserve ? prev.whiteReserve.map(p => ({ ...p })) : [];
+        this.blackReserve = prev.blackReserve ? prev.blackReserve.map(p => ({ ...p })) : [];
+        this.capturedWhite = prev.capturedWhite ? prev.capturedWhite.map(p => ({ ...p })) : [];
+        this.capturedBlack = prev.capturedBlack ? prev.capturedBlack.map(p => ({ ...p })) : [];
         this.moveHistory = prev.moveHistory;
         this.status = prev.status;
         this.winner = prev.winner;
@@ -958,15 +1118,22 @@ class GameEngine {
         this.spawnEvents = [];
         this.delayedSpawns = prev.delayedSpawns ? prev.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })) : [];
         this.positionHistory = prev.positionHistory ? { ...prev.positionHistory } : {};
+        this.suitsResolved = !!prev.suitsResolved;
+        this.suitsReset = !!prev.suitsReset;
+        this.pendingSuitOffer = !!prev.pendingSuitOffer;
         return true;
     }
 
     /**
      * Execute a move from (fromR, fromC) to (toR, toC)
      * Optional promotionChoice: { type: 'Q'|'R'|'B'|'N', suit: 'spades'|'clubs'|'hearts'|'diamonds' }
+     * After engine.suitsReset the suit is omitted (or null) and the piece stays suitless.
      * Returns result object with move details
      */
     makeMove(fromR, fromC, toR, toC, promotionChoice = null) {
+        if (this.pendingSuitOffer) {
+            return { success: false, reason: 'Pending suit offer' };
+        }
         if (this.isGameOver()) {
             return { success: false, reason: 'Game over' };
         }
@@ -982,22 +1149,33 @@ class GameEngine {
             return { success: false, reason: 'Illegal move' };
         }
 
-        // Save state snapshot before mutating
+        // Remember whether any spawn queue (reserves / delayed appearance)
+        // existed before the move: emptying queues is an offer trigger.
+        const hadSpawnQueue = this.whiteReserve.length > 0 ||
+            this.blackReserve.length > 0 ||
+            this.delayedSpawns.length > 0;
+
+        // Save state snapshot before mutating. Pieces are shallow-copied because
+        // every piece field is a primitive, but lists and the board must be
+        // independent so that undo restores suits exactly.
         this.snapshots.push({
             board: this.board.clone(),
             turn: this.turn,
             deck: [...this.deck],
-            whiteReserve: [...this.whiteReserve],
-            blackReserve: [...this.blackReserve],
-            capturedWhite: [...this.capturedWhite],
-            capturedBlack: [...this.capturedBlack],
+            whiteReserve: this.whiteReserve.map(p => ({ ...p })),
+            blackReserve: this.blackReserve.map(p => ({ ...p })),
+            capturedWhite: this.capturedWhite.map(p => ({ ...p })),
+            capturedBlack: this.capturedBlack.map(p => ({ ...p })),
             moveHistory: [...this.moveHistory],
             status: this.status,
             winner: this.winner,
             drawReason: this.drawReason,
             lastMove: this.lastMove ? { ...this.lastMove } : null,
             delayedSpawns: this.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })),
-            positionHistory: { ...this.positionHistory }
+            positionHistory: { ...this.positionHistory },
+            suitsResolved: this.suitsResolved,
+            suitsReset: this.suitsReset,
+            pendingSuitOffer: this.pendingSuitOffer
         });
 
         this.spawnEvents = [];
@@ -1014,14 +1192,18 @@ class GameEngine {
         const movingPieceSuit = piece.suit;
 
         // 2. Handle Pawn Promotion (any stronger piece + any suit chosen by player)
+        // After a suit reset there are no suits left, so only the piece type is chosen.
         let isPromotion = false;
         if (piece.type === 'P') {
             const promoRank = movingColor === 'white' ? 0 : 7;
             if (toR === promoRank) {
                 isPromotion = true;
-                if (promotionChoice && promotionChoice.type && promotionChoice.suit) {
+                const suitsAreReset = this.suitsReset;
+                const hasValidChoice = promotionChoice && promotionChoice.type &&
+                    (suitsAreReset || promotionChoice.suit);
+                if (hasValidChoice) {
                     piece.type = promotionChoice.type;
-                    piece.suit = promotionChoice.suit;
+                    piece.suit = suitsAreReset ? null : promotionChoice.suit;
                     if (piece.type === 'B') {
                         piece.squareColor = (toR + toC) % 2 === 0 ? 'light' : 'dark';
                     } else {
@@ -1029,6 +1211,7 @@ class GameEngine {
                     }
                 } else {
                     piece.type = 'Q'; // Fallback to Queen
+                    if (suitsAreReset) piece.suit = null;
                     piece.squareColor = null;
                 }
             }
@@ -1110,9 +1293,33 @@ class GameEngine {
 
         this.moveHistory.push(this.lastMove);
 
-        // 7. Switch turn and check Threefold Repetition
+        // 7. Switch turn
         this.turn = opponentColor;
 
+        // 8. Empty-bank suit offer: evaluated once per move, after captures, reserve
+        //    deployment and delayed spawns are fully processed, and after the
+        //    mate/stalemate status is known. While the offer is pending, threefold
+        //    repetition is intentionally not processed for this move.
+        const suitDrawOffer = this.shouldOfferSuitDraw({
+            hadCapture: !!capturedPiece,
+            hadPromotion: isPromotion,
+            hadSpawnQueue
+        });
+
+        if (suitDrawOffer) {
+            this.pendingSuitOffer = true;
+            return {
+                success: true,
+                lastMove: this.lastMove,
+                status: this.status,
+                winner: this.winner,
+                threefold: false,
+                suitDrawOffer: true,
+                positionKey: this.getPositionKey()
+            };
+        }
+
+        // 9. Check Threefold Repetition
         const currentPosKey = this.getPositionKey();
         this.positionHistory[currentPosKey] = (this.positionHistory[currentPosKey] || 0) + 1;
         const isThreefold = this.positionHistory[currentPosKey] >= 3;
@@ -1123,8 +1330,71 @@ class GameEngine {
             status: this.status,
             winner: this.winner,
             threefold: isThreefold,
+            suitDrawOffer: false,
             positionKey: currentPosKey
         };
+    }
+
+    /**
+     * Collects the sets of suits still present on each side's board pieces.
+     * Kings and suitless pieces are ignored: only real suited pieces count.
+     */
+    getBoardSuitSets() {
+        const white = new Set();
+        const black = new Set();
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = this.board.getPiece(r, c);
+                if (!p || !p.suit || p.type === 'K') continue;
+                (p.color === 'white' ? white : black).add(p.suit);
+            }
+        }
+        return { white, black };
+    }
+
+    /**
+     * True when the "empty bank + different suits" draw should be offered.
+     * All conditions must hold:
+     * - the bank (deck) is empty, both reserves and the delayed queue are empty;
+     * - both sides still have at least one suited board piece and their suit sets
+     *   do not intersect;
+     * - the offer was not resolved earlier this game;
+     * - the move did not finish the game by mate or stalemate;
+     * - this move captured, promoted, or emptied the spawn queues.
+     */
+    shouldOfferSuitDraw({ hadCapture = false, hadPromotion = false, hadSpawnQueue = false } = {}) {
+        if (this.suitsResolved || this.pendingSuitOffer) return false;
+        if (!hadCapture && !hadPromotion && !hadSpawnQueue) return false;
+        if (this.deck.length !== 0) return false;
+        if (this.whiteReserve.length > 0 || this.blackReserve.length > 0 || this.delayedSpawns.length > 0) {
+            return false;
+        }
+        if (this.status === 'checkmate' || this.status === 'stalemate') return false;
+
+        const { white, black } = this.getBoardSuitSets();
+        if (white.size === 0 || black.size === 0) return false;
+        for (const suit of white) {
+            if (black.has(suit)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Removes suits from every piece that is still in play (board, reserves and the
+     * delayed queue). Captured pieces keep the suit they were captured with, and
+     * bishop square colours are never touched.
+     */
+    resetSuits() {
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = this.board.getPiece(r, c);
+                if (piece) piece.suit = null;
+            }
+        }
+        for (const piece of this.whiteReserve) piece.suit = null;
+        for (const piece of this.blackReserve) piece.suit = null;
+        for (const delayed of this.delayedSpawns) delayed.piece.suit = null;
+        this.suitsReset = true;
     }
 
     /**
@@ -1437,6 +1707,8 @@ class ChessDurakAI {
     }
 
     getBestPromotionSuit(board, opponentColor) {
+        // After the suit reset no piece has a suit, so a promoted piece stays suitless.
+        if (this.engine.suitsReset) return null;
         const suitScores = { spades: 10, clubs: 10, hearts: 10, diamonds: 10 };
         for (let r = 0; r < 8; r++) {
             for (let c = 0; c < 8; c++) {
@@ -1649,6 +1921,8 @@ class ChessDurakApp {
         this.animatedPieceIds = new Set(); // Track pieces that already animated spawn
         this.aiTimer = null;           // Timeout id for AI turn
         this.gameToken = 0;            // Game session token to prevent race conditions
+        this.drawOfferDeclined = false; // The player refused the threefold draw offer in this game
+        this.toastTimer = null;         // Timeout id for the transient in-board notification
 
         this.initDOMElements();
         this.bindEvents();
@@ -1743,7 +2017,18 @@ class ChessDurakApp {
             // Draw Offer Modal (Threefold Repetition)
             drawOfferModal: document.getElementById('drawOfferModal'),
             acceptDrawBtn: document.getElementById('acceptDrawBtn'),
-            declineDrawBtn: document.getElementById('declineDrawBtn')
+            declineDrawBtn: document.getElementById('declineDrawBtn'),
+
+            // Suit Draw Offer Modal (Empty bank, disjoint suits)
+            suitDrawModal: document.getElementById('suitDrawModal'),
+            acceptSuitDrawBtn: document.getElementById('acceptSuitDrawBtn'),
+            declineSuitDrawBtn: document.getElementById('declineSuitDrawBtn'),
+
+            // Promotion prompt (changes when suits are reset)
+            promotionPrompt: document.getElementById('promotionPrompt'),
+
+            // Ephemeral in-board notification
+            gameToast: document.getElementById('gameToast')
         };
     }
 
@@ -1793,14 +2078,28 @@ class ChessDurakApp {
         if (this.dom.declineDrawBtn) {
             this.dom.declineDrawBtn.addEventListener('click', () => {
                 this.dom.drawOfferModal.classList.remove('open');
+                // Refusing once silences the offer for the rest of the game,
+                // otherwise it would pop up again on every later move.
+                this.drawOfferDeclined = true;
             });
         }
         if (this.dom.drawOfferModal) {
             this.dom.drawOfferModal.addEventListener('click', (e) => {
                 if (e.target === this.dom.drawOfferModal) {
                     this.dom.drawOfferModal.classList.remove('open');
+                    // Closing the modal counts as a refusal as well
+                    this.drawOfferDeclined = true;
                 }
             });
+        }
+
+        // Suit draw offer (empty bank, disjoint suits). It cannot be dismissed
+        // without an explicit choice: no backdrop click handler is attached.
+        if (this.dom.acceptSuitDrawBtn) {
+            this.dom.acceptSuitDrawBtn.addEventListener('click', () => this.acceptSuitDrawOffer());
+        }
+        if (this.dom.declineSuitDrawBtn) {
+            this.dom.declineSuitDrawBtn.addEventListener('click', () => this.declineSuitDrawOffer());
         }
 
         // Mode Switching: Hotseat
@@ -1924,6 +2223,74 @@ class ChessDurakApp {
         if (activeBtn) activeBtn.classList.add('active');
     }
 
+    /**
+     * Accepting the empty-bank suit offer ends the game in an agreed draw.
+     */
+    acceptSuitDrawOffer() {
+        if (!this.engine.pendingSuitOffer) return;
+        if (this.dom.suitDrawModal) {
+            this.dom.suitDrawModal.classList.remove('open');
+        }
+        this.engine.status = 'stalemate';
+        this.engine.winner = 'draw';
+        this.engine.drawReason = 'suits_agreement';
+        this.engine.pendingSuitOffer = false;
+        this.engine.suitsResolved = true;
+        this.renderAll();
+        this.showVictoryModal(
+            'Ничья!',
+            'Партия завершена ничьей: у игроков фигуры разных мастей, а банк закончился.'
+        );
+    }
+
+    /**
+     * Declining the offer drops all suits and continues the game.
+     */
+    declineSuitDrawOffer() {
+        if (!this.engine.pendingSuitOffer) return;
+        if (this.dom.suitDrawModal) {
+            this.dom.suitDrawModal.classList.remove('open');
+        }
+        this.engine.resetSuits();
+        this.engine.suitsResolved = true;
+        this.engine.pendingSuitOffer = false;
+        // The suitless position is new, so its first occurrence must be counted
+        this.engine.recordCurrentPosition();
+        this.selectedSquare = null;
+        this.legalMoves = [];
+        this.renderAll();
+        this.showToast('Масти сброшены');
+        this.checkTriggerAI();
+    }
+
+    /**
+     * Shows a short non-blocking notification over the board.
+     */
+    showToast(message) {
+        if (!this.dom.gameToast) return;
+        if (this.toastTimer) {
+            clearTimeout(this.toastTimer);
+            this.toastTimer = null;
+        }
+        this.dom.gameToast.textContent = message;
+        this.dom.gameToast.classList.add('visible');
+        this.toastTimer = setTimeout(() => {
+            this.dom.gameToast.classList.remove('visible');
+            this.toastTimer = null;
+        }, 3000);
+    }
+
+    hideToast() {
+        if (this.toastTimer) {
+            clearTimeout(this.toastTimer);
+            this.toastTimer = null;
+        }
+        if (this.dom.gameToast) {
+            this.dom.gameToast.classList.remove('visible');
+            this.dom.gameToast.textContent = '';
+        }
+    }
+
     updateTutorialStepView() {
         this.dom.tutorialSteps.forEach((stepEl, idx) => {
             stepEl.classList.toggle('active', (idx + 1) === this.tutorialStep);
@@ -1987,6 +2354,12 @@ class ChessDurakApp {
     undoMove() {
         if (this.isAiThinking) return;
         this.hintSquares = null;
+
+        // Undo always dismisses an open empty-bank offer; the restored snapshot
+        // also brings back the pending/suits flags from before the move.
+        if (this.dom.suitDrawModal) {
+            this.dom.suitDrawModal.classList.remove('open');
+        }
 
         const success = this.engine.undoMove();
         if (!success) {
@@ -2053,6 +2426,7 @@ class ChessDurakApp {
         }
         this.gameToken++;
         this.isAiThinking = false;
+        this.drawOfferDeclined = false;
 
         this.engine.startNewGame();
         this.selectedSquare = null;
@@ -2064,6 +2438,10 @@ class ChessDurakApp {
         if (this.dom.drawOfferModal) {
             this.dom.drawOfferModal.classList.remove('open');
         }
+        if (this.dom.suitDrawModal) {
+            this.dom.suitDrawModal.classList.remove('open');
+        }
+        this.hideToast();
         if (this.dom.promotionModal) {
             this.dom.promotionModal.classList.remove('open');
         }
@@ -2198,7 +2576,10 @@ class ChessDurakApp {
             const sqC = parseInt(sq.dataset.col);
             const targetPiece = this.engine.board.getPiece(sqR, sqC);
             if (targetPiece && targetPiece.color === opponentColor) {
-                if (piece.type === 'K' || targetPiece.type === 'K' || (piece.suit && targetPiece.suit === piece.suit)) {
+                // A suitless piece (after the suit reset) can capture any enemy piece,
+                // so every enemy piece is highlighted.
+                if (piece.type === 'K' || !piece.suit || targetPiece.type === 'K' ||
+                    (targetPiece.suit === piece.suit)) {
                     sq.classList.add('suit-target-match');
                 }
             }
@@ -2230,6 +2611,7 @@ class ChessDurakApp {
 
     handleSquareClick(r, c) {
         if (this.isAiThinking) return;
+        if (this.engine.pendingSuitOffer) return;
         if (this.engine.isGameOver()) return;
 
         // Check if it's user's turn in AI mode
@@ -2295,8 +2677,35 @@ class ChessDurakApp {
 
         const pieceTypes = ['Q', 'R', 'B', 'N'];
         const suitKeys = ['spades', 'clubs', 'hearts', 'diamonds'];
+        const suitsReset = this.engine.suitsReset;
+
+        if (this.dom.promotionPrompt) {
+            this.dom.promotionPrompt.textContent = suitsReset
+                ? 'Выберите новую фигуру (масти сброшены):'
+                : 'Выберите новую фигуру и её масть:';
+        }
 
         pieceTypes.forEach(type => {
+            if (suitsReset) {
+                // After the suit reset only the piece type can be chosen.
+                const btn = document.createElement('button');
+                btn.className = 'promotion-option-btn';
+                btn.title = `${PIECE_NAMES[type]} (без масти)`;
+                btn.innerHTML = `
+                    <div class="piece-svg">${PIECE_SVGS[color][type]}</div>
+                    <div class="suit-badge suit-none"></div>
+                `;
+
+                btn.addEventListener('click', () => {
+                    this.dom.promotionModal.classList.remove('open');
+                    sounds.spawn();
+                    onSelect({ type, suit: null });
+                });
+
+                grid.appendChild(btn);
+                return;
+            }
+
             suitKeys.forEach(suit => {
                 const btn = document.createElement('button');
                 btn.className = 'promotion-option-btn';
@@ -2355,6 +2764,14 @@ class ChessDurakApp {
             return;
         }
 
+        // Empty-bank suit draw offer: the game is paused until the player chooses.
+        if (result.suitDrawOffer) {
+            if (this.dom.suitDrawModal) {
+                this.dom.suitDrawModal.classList.add('open');
+            }
+            return;
+        }
+
         // Threefold Repetition Check
         if (result.threefold) {
             if (this.gameMode === 'ai-white' || this.gameMode === 'ai-black') {
@@ -2367,7 +2784,8 @@ class ChessDurakApp {
                 this.showVictoryModal('Поражение игроку!', 'Зафиксировано троекратное повторение позиции. При игре против ИИ засчитано поражение игроку.');
                 return;
             } else {
-                if (this.dom.drawOfferModal) {
+                // The offer was already refused once in this game: keep playing silently
+                if (this.dom.drawOfferModal && !this.drawOfferDeclined) {
                     this.dom.drawOfferModal.classList.add('open');
                 }
                 return;
@@ -2385,7 +2803,7 @@ class ChessDurakApp {
         }
 
         const isAiTurn = this.isAiTurn();
-        if (!isAiTurn || this.engine.isGameOver()) {
+        if (!isAiTurn || this.engine.isGameOver() || this.engine.pendingSuitOffer) {
             this.isAiThinking = false;
             return;
         }
@@ -2400,7 +2818,7 @@ class ChessDurakApp {
 
             // Validate state before making move: token matches, still AI turn, game not over
             if (this.gameToken !== currentToken) return;
-            if (!this.isAiTurn() || this.engine.isGameOver()) {
+            if (!this.isAiTurn() || this.engine.isGameOver() || this.engine.pendingSuitOffer) {
                 this.isAiThinking = false;
                 this.renderAll();
                 return;
@@ -2410,7 +2828,7 @@ class ChessDurakApp {
                 const bestMove = await this.ai.findBestMove(this.engine.turn, this.difficulty);
                 // Check again after async calculation
                 if (this.gameToken !== currentToken) return;
-                if (!this.isAiTurn() || this.engine.isGameOver()) return;
+                if (!this.isAiTurn() || this.engine.isGameOver() || this.engine.pendingSuitOffer) return;
 
                 if (bestMove) {
                     this.executeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c, bestMove.promotionChoice);
@@ -2510,15 +2928,19 @@ class ChessDurakApp {
             reserve.forEach(p => {
                 const miniCard = document.createElement('div');
                 miniCard.className = 'mini-piece-card';
+                const badgeHtml = p.suit && SUITS[p.suit]
+                    ? `<div class="suit-badge suit-${p.suit}">${SUITS[p.suit].symbol}</div>`
+                    : '<div class="suit-badge suit-none"></div>';
                 miniCard.innerHTML = `
                     <div class="piece-svg">${PIECE_SVGS[p.color][p.type]}</div>
-                    <div class="suit-badge suit-${p.suit}">${SUITS[p.suit].symbol}</div>
+                    ${badgeHtml}
                 `;
                 let bishopDesc = '';
                 if (p.type === 'B' && p.squareColor) {
                     bishopDesc = p.squareColor === 'light' ? ' (белопольный)' : ' (чернопольный)';
                 }
-                miniCard.title = `${PIECE_NAMES[p.type]}${bishopDesc} (${SUITS[p.suit].name}) в резерве`;
+                const suitDesc = p.suit && SUITS[p.suit] ? SUITS[p.suit].name : 'без масти';
+                miniCard.title = `${PIECE_NAMES[p.type]}${bishopDesc} (${suitDesc}) в резерве`;
                 reserveSlotsEl.appendChild(miniCard);
             });
         }
@@ -2529,8 +2951,9 @@ class ChessDurakApp {
         captures.forEach(c => {
             const capSpan = document.createElement('span');
             capSpan.className = 'capture-item';
-            const sym = c.suit ? SUITS[c.suit].symbol : '';
-            capSpan.innerHTML = `<strong>${c.type}</strong><span style="color:${c.suit ? SUITS[c.suit].color : '#fff'}">${sym}</span>`;
+            const suitInfo = c.suit ? SUITS[c.suit] : null;
+            const sym = suitInfo ? suitInfo.symbol : '';
+            capSpan.innerHTML = `<strong>${c.type}</strong><span style="color:${suitInfo ? suitInfo.color : '#fff'}">${sym}</span>`;
             capturesListEl.appendChild(capSpan);
         });
     }
@@ -2549,7 +2972,7 @@ class ChessDurakApp {
             this.dom.bannerText.textContent = 'Пат. Ничья';
             return;
         }
-        if (this.engine.drawReason === 'agreement') {
+        if (this.engine.drawReason === 'agreement' || this.engine.drawReason === 'suits_agreement') {
             this.dom.bannerText.textContent = 'Ничья по соглашению';
             return;
         }
