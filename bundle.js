@@ -1125,6 +1125,57 @@ class GameEngine {
     }
 
     /**
+     * Collects the suits the given player still has among their pieces:
+     * board pieces (kings have no suit), their reserve and their pending
+     * delayed appearances. Suitless pieces do not add a suit.
+     */
+    getPresentSuits(color) {
+        const suits = new Set();
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = this.board.getPiece(r, c);
+                if (piece && piece.color === color && piece.suit) {
+                    suits.add(piece.suit);
+                }
+            }
+        }
+        const reserve = color === 'white' ? this.whiteReserve : this.blackReserve;
+        for (const piece of reserve) {
+            if (piece.suit) suits.add(piece.suit);
+        }
+        for (const delayed of this.delayedSpawns) {
+            if (delayed.player === color && delayed.piece.suit) {
+                suits.add(delayed.piece.suit);
+            }
+        }
+        return suits;
+    }
+
+    /**
+     * Draws a bank card for `color`. Normally the top card is taken, but when
+     * the player is missing suits, the topmost card of a missing suit is
+     * preferred. Returns the removed card or null when the bank is empty.
+     * After a suit reset the rule does not apply (the bank is empty anyway).
+     */
+    drawBankCardFor(color) {
+        if (this.deck.length === 0) return null;
+        const takeTopCard = () => this.deck.pop();
+
+        if (this.suitsReset) return takeTopCard();
+
+        const present = this.getPresentSuits(color);
+        const missing = ['spades', 'clubs', 'hearts', 'diamonds'].filter(suit => !present.has(suit));
+        if (missing.length === 0) return takeTopCard();
+
+        for (let i = this.deck.length - 1; i >= 0; i--) {
+            if (missing.includes(this.deck[i].suit)) {
+                return this.deck.splice(i, 1)[0];
+            }
+        }
+        return takeTopCard();
+    }
+
+    /**
      * Execute a move from (fromR, fromC) to (toR, toC)
      * Optional promotionChoice: { type: 'Q'|'R'|'B'|'N', suit: 'spades'|'clubs'|'hearts'|'diamonds' }
      * After engine.suitsReset the suit is omitted (or null) and the piece stays suitless.
@@ -1228,7 +1279,7 @@ class GameEngine {
 
             // Opponent draws a replacement card from the bank
             if (this.deck.length > 0) {
-                const card = this.deck.pop();
+                const card = this.drawBankCardFor(opponentColor);
                 bankPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
             }
         }
@@ -1262,7 +1313,7 @@ class GameEngine {
         const isOpponentInCheck = GameRules.isKingInCheck(this.board, opponentColor);
         const opponentMoves = GameRules.getAllLegalMoves(this.board, opponentColor);
 
-        let moveNotation = this.formatNotation(movingPieceType, movingPieceSuit, piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0);
+        let moveNotation = this.formatNotation(movingPieceType, movingPieceSuit, piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0 && isOpponentInCheck);
 
         // A move clears any previous draw reason; only a stalemate below can set it again
         this.drawReason = null;
