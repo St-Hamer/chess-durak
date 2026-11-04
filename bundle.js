@@ -493,24 +493,41 @@ function dealPiecesFromDeck(deck, targetSum = null) {
     throw new Error(`Failed to find compatible piece distribution for target sum ${targetSum}`);
 }
 
-// Crisp Vector SVGs for chess pieces
+// Crisp Vector SVGs for chess pieces.
+//
+// The geometry of each piece is defined once (PIECE_GEOMETRY) and reused for
+// both colors, so a white and a black piece can never drift apart: only the
+// fill/stroke colors change. The knight's eye and nostril use the special
+// __CONTRAST__ token, which is replaced with the stroke color (the color
+// opposite to the body fill).
+const PIECE_STROKE = '#1c1917';
+const PIECE_LIGHT = '#fff';
+
+const PIECE_GEOMETRY = {
+    K: `<path d="M22.5 11.63V6M20 8h5"/><path d="M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5"/><path d="M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V23.5C20 16 10.5 13 6.5 19.5c-3 6 5.5 10.5 5.5 10.5v7z"/><path d="M11.5 30c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0"/>`,
+    // Five crown points, each topped by a ball touching its tip. Coordinates
+    // are mirror-symmetric around x = 22.5.
+    Q: `<circle cx="6" cy="12" r="2"/><circle cx="14" cy="8.5" r="2"/><circle cx="22.5" cy="7.5" r="2"/><circle cx="31" cy="8.5" r="2"/><circle cx="39" cy="12" r="2"/><path stroke-linecap="butt" d="M9 26c8.5-1.5 21-1.5 27 0l2-12-7 11V10.5l-5.5 14-3-15-3 15-5.5-14V25L7 14z"/><path stroke-linecap="butt" d="M9 26c0 2 1.5 2 2.5 4 1 1.5 1 1 .5 3.5-1.5 1-1.5 2.5-1.5 2.5-1.5 1.5.5 2.5.5 2.5 6.5 1 16.5 1 23 0 0 0 1.5-1 0-2.5 0 0 .5-1.5-1-2.5-.5-2.5-.5-2 .5-3.5 1-2 2.5-2 2.5-4-8.5-1.5-18.5-1.5-27 0z"/><path fill="none" d="M11.5 30c3.5-1 18.5-1 22 0M12 33.5c6-1 15-1 21 0"/>`,
+    // The crenellated top is connected to the tapered body by two shoulders.
+    R: `<path stroke-linecap="butt" d="M9 39h27v-3H9zm3-3v-4h21v4zm-1-22V9h4v2h5V9h5v2h5V9h4v5"/><path d="M34 14l-3 3H14l-3-3"/><path stroke-linecap="butt" stroke-linejoin="miter" d="M31 17v12.5H14V17"/><path d="M31 29.5l1.5 2.5h-20l1.5-2.5"/><path fill="none" stroke-linejoin="miter" d="M11 14h23"/>`,
+    B: `<path d="M9 36c3.39-.97 10.11.43 13.5-2 3.39 2.43 10.11 1.03 13.5 2 0 0 1.65.54 3 2-.68.97-1.65.99-3 .5-3.39-.97-10.11.46-13.5-1-3.39 1.46-10.11.03-13.5 1-1.35.49-2.32.47-3-.5 1.35-1.46 3-2 3-2zM15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2zM25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z"/><path d="M17.5 26h10M15 30h15m-7.5-14.5v5m-3-2.5h6"/>`,
+    // The mane path ends exactly at the silhouette start (22,10), so the head
+    // is a continuous part of the body with no gap.
+    N: `<path d="M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21"/><path d="M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.042-.94 1.41-3.04 0-3-1 0 .19 1.23-1 2-1 0-4.003 1-4-4 0-2 6-12 6-12s1.89-1.9 2-3.5c-.73-.994-.5-2-.5-3 1-1 3 2.5 3 2.5h2s.78-1.992 2.5-3c1 0 1 3 1 3"/><circle cx="15.5" cy="15" r="1.25" fill="__CONTRAST__" stroke="none"/><circle cx="10" cy="24" r="0.75" fill="__CONTRAST__" stroke="none"/>`,
+    P: `<path d="M22 9c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.38C17.33 16.5 16 18.59 16 21c0 2.03.94 3.84 2.41 5.03-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47 1.47-1.19 2.41-3 2.41-5.03 0-2.41-1.33-4.5-2.78-5.62.49-.67.78-1.49.78-2.38 0-2.21-1.79-4-4-4z"/>`
+};
+
+function buildPieceSvg(type, fill, stroke) {
+    const geometry = PIECE_GEOMETRY[type].replace(/__CONTRAST__/g, stroke);
+    return `<svg viewBox="0 0 45 45"><g fill="${fill}" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${geometry}</g></svg>`;
+}
 const PIECE_SVGS = {
-    white: {
-        K: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22.5 11.63V6M20 8h5"/><path d="M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5"/><path d="M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V23.5C20 16 10.5 13 6.5 19.5c-3 6 5.5 10.5 5.5 10.5v7z"/><path d="M11.5 30c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0"/></g></svg>`,
-        Q: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm16.5-4.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0zM41 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm-29.5 4.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm24 0a2 2 0 1 1-4 0 2 2 0 1 1 4 0z"/><path d="M9 26c8.5-1.5 21-1.5 27 0l2-12-7 11-7.5-16-7.5 16-7-11 2 12zm0 5c9-1.5 18-1.5 27 0l1 5.5s-6.5 2.5-14.5 2.5-14.5-2.5-14.5-2.5L9 31z"/><path d="M11 38.5a35 35 0 0 0 23 0"/></g></svg>`,
-        R: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 39h27v-3H9v3zm3-3v-4.5h21V36H12zm2-4.5l1.5-14h14l1.5 14H14zM11 14h23v-3H11v3zm1.5-3.5V7h3.5v2.5h4V7h5v2.5h4V7h3.5v3.5H12.5z"/></g></svg>`,
-        B: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 36c3.39-.97 10.11.43 13.5-2 3.39 2.43 10.11 1.03 13.5 2 0 0 1.65.54 3 2-.68.97-1.65.99-3 .5-3.39-.97-10.11.46-13.5-1-3.39 1.46-10.11.03-13.5 1-1.35.49-2.32.47-3-.5 1.35-1.46 3-2 3-2zM15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2zM25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z"/><path d="M17.5 26h10M15 30h15m-7.5-14.5v5m-3-2.5h6"/></g></svg>`,
-        N: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21"/><path d="M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.042-.94 1.41-3.04 0-3-1 0-.932 1.49-1.5 2.5-.7 1.25-2.2 1.5-2.5 1-.5-1-1.5-3 0-4 1.5-1 3.5-.5 5-2.5 1.5-2 2-3 2.5-4.5 1.5-3.5.5-5 .5-5s4.5-1 9 7z"/><circle cx="17" cy="14" r="1.5" fill="#1c1917"/></g></svg>`,
-        P: `<svg viewBox="0 0 45 45"><g fill="#fff" stroke="#1c1917" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 9c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.38C17.33 16.5 16 18.59 16 21c0 2.03.94 3.84 2.41 5.03-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47 1.47-1.19 2.41-3 2.41-5.03 0-2.41-1.33-4.5-2.78-5.62.49-.67.78-1.49.78-2.38 0-2.21-1.79-4-4-4z"/></g></svg>`
-    },
-    black: {
-        K: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22.5 11.63V6M20 8h5"/><path d="M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5"/><path d="M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V23.5C20 16 10.5 13 6.5 19.5c-3 6 5.5 10.5 5.5 10.5v7z"/><path d="M11.5 30c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0m-21 3.5c5.5-3 15.5-3 21 0"/></g></svg>`,
-        Q: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm16.5-4.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0zM41 12a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm-29.5 4.5a2 2 0 1 1-4 0 2 2 0 1 1 4 0zm24 0a2 2 0 1 1-4 0 2 2 0 1 1 4 0z"/><path d="M9 26c8.5-1.5 21-1.5 27 0l2-12-7 11-7.5-16-7.5 16-7-11 2 12zm0 5c9-1.5 18-1.5 27 0l1 5.5s-6.5 2.5-14.5 2.5-14.5-2.5-14.5-2.5L9 31z"/><path d="M11 38.5a35 35 0 0 0 23 0"/></g></svg>`,
-        R: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 39h27v-3H9v3zm3-3v-4.5h21V36H12zm2-4.5l1.5-14h14l1.5 14H14zM11 14h23v-3H11v3zm1.5-3.5V7h3.5v2.5h4V7h5v2.5h4V7h3.5v3.5H12.5z"/></g></svg>`,
-        B: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 36c3.39-.97 10.11.43 13.5-2 3.39 2.43 10.11 1.03 13.5 2 0 0 1.65.54 3 2-.68.97-1.65.99-3 .5-3.39-.97-10.11.46-13.5-1-3.39 1.46-10.11.03-13.5 1-1.35.49-2.32.47-3-.5 1.35-1.46 3-2 3-2zM15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2zM25 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0z"/><path d="M17.5 26h10M15 30h15m-7.5-14.5v5m-3-2.5h6"/></g></svg>`,
-        N: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10c10.5 1 16.5 8 16 29H15c0-9 10-6.5 8-21"/><path d="M24 18c.38 2.91-5.55 7.37-8 9-3 2-2.82 4.34-5 4-1.042-.94 1.41-3.04 0-3-1 0-.932 1.49-1.5 2.5-.7 1.25-2.2 1.5-2.5 1-.5-1-1.5-3 0-4 1.5-1 3.5-.5 5-2.5 1.5-2 2-3 2.5-4.5 1.5-3.5.5-5 .5-5s4.5-1 9 7z"/><circle cx="17" cy="14" r="1.5" fill="#fff"/></g></svg>`,
-        P: `<svg viewBox="0 0 45 45"><g fill="#1c1917" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 9c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.38C17.33 16.5 16 18.59 16 21c0 2.03.94 3.84 2.41 5.03-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47 1.47-1.19 2.41-3 2.41-5.03 0-2.41-1.33-4.5-2.78-5.62.49-.67.78-1.49.78-2.38 0-2.21-1.79-4-4-4z"/></g></svg>`
-    }
+    white: Object.fromEntries(
+        Object.keys(PIECE_GEOMETRY).map(type => [type, buildPieceSvg(type, PIECE_LIGHT, PIECE_STROKE)])
+    ),
+    black: Object.fromEntries(
+        Object.keys(PIECE_GEOMETRY).map(type => [type, buildPieceSvg(type, PIECE_STROKE, PIECE_LIGHT)])
+    )
 };
 
 /**
@@ -1989,7 +2006,6 @@ class ChessDurakApp {
             filesTop: document.getElementById('filesTop'),
             filesBottom: document.getElementById('filesBottom'),
             deckCounter: document.getElementById('deckCounter'),
-            bannerText: document.getElementById('bannerText'),
 
             // Top player
             topPlayerCard: document.getElementById('topPlayerCard'),
@@ -2010,6 +2026,8 @@ class ChessDurakApp {
             bottomCapturesList: document.getElementById('bottomCapturesList'),
 
             // Controls
+            gameMenuBtn: document.getElementById('gameMenuBtn'),
+            gameMenuPanel: document.getElementById('gameMenuPanel'),
             newGameBtn: document.getElementById('newGameBtn'),
             flipBoardBtn: document.getElementById('flipBoardBtn'),
             soundToggleBtn: document.getElementById('soundToggleBtn'),
@@ -2084,6 +2102,56 @@ class ChessDurakApp {
     }
 
     bindEvents() {
+        // Floating game menu (Rules / Sound / Flip / New game)
+        if (this.dom.gameMenuBtn && this.dom.gameMenuPanel) {
+            this.dom.gameMenuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleGameMenu();
+            });
+
+            // Choosing any menu item performs its own action and closes the menu
+            this.dom.gameMenuPanel.addEventListener('click', (e) => {
+                if (e.target.closest('button')) {
+                    this.closeGameMenu(true);
+                }
+            });
+
+            // Keyboard navigation inside the menu
+            this.dom.gameMenuPanel.addEventListener('keydown', (e) => {
+                const items = Array.from(this.dom.gameMenuPanel.querySelectorAll('button'));
+                if (items.length === 0) return;
+                const index = items.indexOf(document.activeElement);
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    items[index < 0 ? 0 : (index + 1) % items.length].focus();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    items[index < 0 ? items.length - 1 : (index - 1 + items.length) % items.length].focus();
+                } else if (e.key === 'Home') {
+                    e.preventDefault();
+                    items[0].focus();
+                } else if (e.key === 'End') {
+                    e.preventDefault();
+                    items[items.length - 1].focus();
+                }
+            });
+
+            // A click outside the menu and its trigger closes the menu
+            document.addEventListener('click', (e) => {
+                if (!this.dom.gameMenuPanel.classList.contains('open')) return;
+                if (this.dom.gameMenuBtn.contains(e.target) ||
+                    this.dom.gameMenuPanel.contains(e.target)) return;
+                this.closeGameMenu();
+            });
+
+            // Escape closes the menu and returns focus to its trigger
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && this.dom.gameMenuPanel.classList.contains('open')) {
+                    this.closeGameMenu(true);
+                }
+            });
+        }
+
         this.dom.newGameBtn.addEventListener('click', () => this.startNewGame());
         this.dom.flipBoardBtn.addEventListener('click', () => this.toggleFlipBoard());
         
@@ -2121,7 +2189,7 @@ class ChessDurakApp {
                 this.engine.status = 'stalemate';
                 this.engine.winner = 'draw';
                 this.engine.drawReason = 'agreement';
-                // Refresh immediately so the banner shows the draw result
+                // Refresh immediately so the player panels reflect the draw
                 this.renderAll();
                 this.showVictoryModal('Ничья!', 'Партия завершена ничьей по соглашению игроков (троекратное повторение позиции).');
             });
@@ -2267,6 +2335,31 @@ class ChessDurakApp {
         this.dom.tutorialUndoBtn.addEventListener('click', () => {
             this.undoMove();
         });
+    }
+
+    /**
+     * Toggles the floating game menu.
+     */
+    toggleGameMenu() {
+        if (this.dom.gameMenuPanel.classList.contains('open')) {
+            this.closeGameMenu(true);
+        } else {
+            this.openGameMenu();
+        }
+    }
+
+    openGameMenu() {
+        this.dom.gameMenuPanel.classList.add('open');
+        this.dom.gameMenuBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    closeGameMenu(returnFocus = false) {
+        const wasOpen = this.dom.gameMenuPanel.classList.contains('open');
+        this.dom.gameMenuPanel.classList.remove('open');
+        this.dom.gameMenuBtn.setAttribute('aria-expanded', 'false');
+        if (wasOpen && returnFocus) {
+            this.dom.gameMenuBtn.focus();
+        }
     }
 
     setActiveModeBtn(activeBtn) {
@@ -2460,13 +2553,19 @@ class ChessDurakApp {
                     <td><strong>${move.notation}</strong></td>
                     <td id="move-${moveNum}-black">-</td>
                 `;
-                this.dom.historyTableBody.appendChild(tr);
+                // Rebuild in reverse chronological order as well.
+                this.dom.historyTableBody.prepend(tr);
             } else {
                 const blackTd = document.getElementById(`move-${moveNum}-black`);
                 if (blackTd) {
                     blackTd.innerHTML = `<strong>${move.notation}</strong>`;
                 }
             }
+        }
+
+        const container = document.querySelector('.history-table-container');
+        if (container) {
+            container.scrollTop = 0;
         }
     }
 
@@ -2485,6 +2584,10 @@ class ChessDurakApp {
         this.hintSquares = null;
         this.animatedPieceIds.clear();
         this.dom.historyTableBody.innerHTML = '';
+        const historyContainer = document.querySelector('.history-table-container');
+        if (historyContainer) {
+            historyContainer.scrollTop = 0;
+        }
         this.dom.victoryModal.classList.remove('open');
         if (this.dom.drawOfferModal) {
             this.dom.drawOfferModal.classList.remove('open');
@@ -2515,7 +2618,6 @@ class ChessDurakApp {
         this.renderBoard();
         this.renderPlayerPanels();
         this.renderDeck();
-        this.renderStatusBanner();
     }
 
     renderBoard() {
@@ -2827,7 +2929,7 @@ class ChessDurakApp {
         if (result.threefold) {
             if (this.gameMode === 'ai-white' || this.gameMode === 'ai-black') {
                 const isPlayerWhite = (this.gameMode === 'ai-white');
-                // Dedicated status: it is a loss, but NOT a check/mate (no "МАТ!" banner, no check highlight)
+                // Dedicated status: it is a loss, but NOT a check/mate (no "МАТ!" text, no check highlight)
                 this.engine.status = 'repetition';
                 this.engine.winner = isPlayerWhite ? 'black' : 'white';
                 this.renderAll();
@@ -2860,7 +2962,6 @@ class ChessDurakApp {
         }
 
         this.isAiThinking = true;
-        this.dom.bannerText.textContent = `Компьютер думает... 🤔`;
         this.renderPlayerPanels();
         const currentToken = this.gameToken;
 
@@ -2888,7 +2989,7 @@ class ChessDurakApp {
                 if (this.gameToken === currentToken) {
                     this.isAiThinking = false;
                     // executeMove() rendered while the "thinking" flag was still set, so the
-                    // banner/panels were skipped. Always refresh them afterwards (mate included).
+                    // panels were skipped. Always refresh them afterwards (mate included).
                     this.renderAll();
                 }
             }
@@ -3013,47 +3114,6 @@ class ChessDurakApp {
         this.dom.deckCounter.textContent = this.engine.deck.length;
     }
 
-    renderStatusBanner() {
-        if (this.isAiThinking) return;
-
-        const status = this.engine.status;
-
-        // Draws have their own banner text (the modal alone was not enough)
-        if (this.engine.drawReason === 'stalemate') {
-            this.dom.bannerText.textContent = 'Пат. Ничья';
-            return;
-        }
-        if (this.engine.drawReason === 'agreement' || this.engine.drawReason === 'suits_agreement') {
-            this.dom.bannerText.textContent = 'Ничья по соглашению';
-            return;
-        }
-
-        // Repetition is a loss, but NOT a mate: dedicated banner, no "МАТ!" text
-        if (status === 'repetition') {
-            this.dom.bannerText.textContent = 'Поражение по повторению позиции';
-            return;
-        }
-
-        const isWhite = this.engine.turn === 'white';
-        let text = isWhite ? 'Ход Белых' : 'Ход Чёрных';
-
-        if (this.engine.startingPoints) {
-            text += ` | Раздача: ${this.engine.startingPoints} очков`;
-        }
-
-        if (this.engine.delayedSpawns && this.engine.delayedSpawns.length > 0) {
-            text += ` [⏳ Отложено фигур: ${this.engine.delayedSpawns.length}]`;
-        }
-
-        if (status === 'check') {
-            text += ' ⚠️ (ШАХ!)';
-        } else if (status === 'checkmate') {
-            text = `🏆 МАТ! Победа ${this.engine.winner === 'white' ? 'Белых' : 'Чёрных'}`;
-        }
-
-        this.dom.bannerText.textContent = text;
-    }
-
     addHistoryEntry(lastMove) {
         const moveNum = Math.ceil(this.engine.moveHistory.length / 2);
         const isWhite = lastMove.piece.color === 'white';
@@ -3065,7 +3125,8 @@ class ChessDurakApp {
                 <td><strong>${lastMove.notation}</strong></td>
                 <td id="move-${moveNum}-black">-</td>
             `;
-            this.dom.historyTableBody.appendChild(tr);
+            // Newest move goes first: the history is read top-to-bottom.
+            this.dom.historyTableBody.prepend(tr);
         } else {
             const blackTd = document.getElementById(`move-${moveNum}-black`);
             if (blackTd) {
@@ -3073,10 +3134,10 @@ class ChessDurakApp {
             }
         }
 
-        // Auto-scroll history to bottom
+        // The newest move is at the top, so keep the history scrolled there.
         const container = document.querySelector('.history-table-container');
         if (container) {
-            container.scrollTop = container.scrollHeight;
+            container.scrollTop = 0;
         }
     }
 

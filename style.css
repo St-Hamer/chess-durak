@@ -32,8 +32,6 @@
     --shadow-glow-gold: 0 0 20px rgba(245, 158, 11, 0.35);
     --shadow-glow-check: 0 0 25px rgba(225, 29, 72, 0.8);
 
-    --board-size: min(540px, calc(100vw - 64px), calc(100vh - 200px));
-    --coord-size: clamp(14px, 3vw, 24px);
     --board-container-max: 620px;
 }
 
@@ -59,6 +57,7 @@ body {
 }
 
 .app-container {
+    position: relative;
     width: 100%;
     max-width: 1400px;
     padding: clamp(8px, 1.8vw, 18px) clamp(10px, 2.2vw, 24px);
@@ -70,54 +69,8 @@ body {
 }
 
 /* ==========================================================================
-   Header
+   Buttons
    ========================================================================== */
-.app-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: var(--bg-card);
-    backdrop-filter: blur(16px);
-    padding: 12px 24px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-color);
-    box-shadow: var(--shadow-soft);
-}
-
-.logo-group {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-}
-
-.logo-icon {
-    font-size: 2.2rem;
-    filter: drop-shadow(0 2px 8px rgba(251, 191, 36, 0.4));
-}
-
-.logo-text h1 {
-    font-family: 'Cinzel', serif;
-    font-size: 1.6rem;
-    font-weight: 800;
-    letter-spacing: 0.5px;
-    background: linear-gradient(135deg, #fff 30%, #fbbf24 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
-.logo-sub {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    font-weight: 500;
-}
-
-.header-controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-/* Buttons */
 .btn {
     display: inline-flex;
     align-items: center;
@@ -157,18 +110,78 @@ body {
     transform: translateY(-1px);
 }
 
-.btn-icon-only {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 8px 12px;
-    font-size: 1.1rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+/* ==========================================================================
+   Game Menu (floating hamburger, replaces the old top panel)
+   ========================================================================== */
+.game-menu {
+    position: absolute;
+    top: clamp(8px, 1.8vw, 18px);
+    right: clamp(10px, 2.2vw, 24px);
+    z-index: 60;
 }
 
-.btn-icon-only:hover {
-    background: rgba(255, 255, 255, 0.16);
+.game-menu-btn {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    justify-content: center;
+    font-size: 1.35rem;
+    line-height: 1;
+    background: var(--bg-card);
+    backdrop-filter: blur(16px);
+    box-shadow: var(--shadow-soft);
+}
+
+.game-menu-btn:hover,
+.game-menu-btn[aria-expanded="true"] {
+    background: var(--bg-card-hover);
+    border-color: var(--border-gold);
+    transform: translateY(-1px);
+}
+
+.game-menu-btn:focus-visible {
+    outline: 2px solid var(--text-gold);
+    outline-offset: 2px;
+}
+
+.game-menu-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(260px, calc(100vw - 28px));
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: rgba(22, 29, 47, 0.97);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border-gold);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-soft), 0 18px 36px -12px rgba(0, 0, 0, 0.8);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-6px);
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+}
+
+.game-menu-panel.open {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.game-menu-panel .btn {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+}
+
+.game-menu-panel .btn:focus-visible {
+    outline: 2px solid var(--text-gold);
+    outline-offset: 1px;
 }
 
 /* ==========================================================================
@@ -437,102 +450,146 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    justify-content: center;
+    gap: 8px;
     position: relative;
+    width: 100%;
+    min-width: 0;
 }
 
 .board-container {
-    display: grid;
-    grid-template-columns: var(--coord-size) var(--board-size) var(--coord-size);
-    grid-template-rows: var(--coord-size) var(--board-size) var(--coord-size);
-    grid-template-areas:
-        "corner-tl  files-top   corner-tr"
-        "ranks-left board       ranks-right"
-        "corner-bl  files-bot   corner-br";
-    align-items: center;
-    justify-items: center;
+    /* Thin decorative frame around the board. The coordinates are overlaid
+       inside the playing area, so the frame no longer reserves rows/columns. */
+    --frame-pad: 4px;
+    position: relative;
+    display: block;
+    width: min(100%, calc(100vh - 88px));
+    width: min(100%, calc(100dvh - 88px));
+    aspect-ratio: 1 / 1;
+    margin-inline: auto;
     background: #271e16;
-    border-radius: clamp(10px, 2vw, var(--radius-lg));
-    padding: clamp(4px, 1.2vw, 10px);
-    border: clamp(2px, 0.6vw, 4px) solid #4a3828;
-    box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.7), inset 0 2px 6px rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: var(--frame-pad);
+    border: 2px solid #4a3828;
+    box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
     max-width: 100%;
 }
 
 .chess-board {
-    grid-area: board;
+    position: absolute;
+    inset: var(--frame-pad);
     display: grid;
     grid-template-columns: repeat(8, 1fr);
     grid-template-rows: repeat(8, 1fr);
-    width: var(--board-size);
-    height: var(--board-size);
-    border-radius: clamp(4px, 1vw, 6px);
+    min-width: 0;
+    min-height: 0;
+    border-radius: 5px;
     overflow: hidden;
     box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
     touch-action: manipulation;
 }
 
-.coord-ranks-left {
-    grid-area: ranks-left;
-}
-
-.coord-ranks-right {
-    grid-area: ranks-right;
+/* Coordinates are overlaid in the free margins of the outermost squares:
+   files above/below the top/bottom rows and ranks left/right of the
+   left/right columns. All four sets are displayed. */
+.coord-ranks,
+.coord-files {
+    position: absolute;
+    z-index: 12;
+    display: grid;
+    pointer-events: none;
+    font-size: clamp(0.5rem, 1.3vmin, 0.8rem);
+    font-weight: 700;
+    line-height: 1;
+    background: none;
 }
 
 .coord-files-top {
-    grid-area: files-top;
+    top: var(--frame-pad);
+    left: var(--frame-pad);
+    right: var(--frame-pad);
+    height: calc((100% - 2 * var(--frame-pad)) / 8);
+    grid-template-columns: repeat(8, 1fr);
+    align-items: start;
+    justify-items: center;
 }
 
 .coord-files-bottom {
-    grid-area: files-bot;
-}
-
-.coord-ranks {
-    display: grid;
-    grid-template-rows: repeat(8, 1fr);
-    width: 100%;
-    height: 100%;
-    align-items: center;
-    justify-items: center;
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: #c9b197;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-
-.coord-ranks span {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 100%;
-}
-
-.coord-files {
-    display: grid;
+    bottom: var(--frame-pad);
+    left: var(--frame-pad);
+    right: var(--frame-pad);
+    height: calc((100% - 2 * var(--frame-pad)) / 8);
     grid-template-columns: repeat(8, 1fr);
-    width: 100%;
-    height: 100%;
-    align-items: center;
+    align-items: end;
     justify-items: center;
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: #c9b197;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
+.coord-ranks-left {
+    top: var(--frame-pad);
+    bottom: var(--frame-pad);
+    left: var(--frame-pad);
+    width: calc((100% - 2 * var(--frame-pad)) / 8);
+    grid-template-rows: repeat(8, 1fr);
+    align-items: center;
+    justify-items: start;
+}
+
+.coord-ranks-right {
+    top: var(--frame-pad);
+    bottom: var(--frame-pad);
+    right: var(--frame-pad);
+    width: calc((100% - 2 * var(--frame-pad)) / 8);
+    grid-template-rows: repeat(8, 1fr);
+    align-items: center;
+    justify-items: end;
+}
+
+/* No chip/background: only the glyph itself. The coordinates sit inside the
+   empty margin of the square, so they never cover the piece artwork. */
+.coord-ranks span,
 .coord-files span {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
+    padding: 0;
+    margin: 0;
+    background: none;
 }
 
+/* Small inset from the cell edge for the rank digits. The same padding works
+   for both sides: left ranks align to the start edge, right ranks to the end. */
+.coord-ranks span {
+    padding: 0 clamp(1px, 0.35vmin, 2px);
+}
+
+/* Light squares -> green text; dark squares -> white text. */
+.coord-ranks-left span:nth-child(odd),
+.coord-files-top span:nth-child(odd) {
+    color: #3f6b2a;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+
+.coord-ranks-left span:nth-child(even),
+.coord-files-top span:nth-child(even) {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.coord-ranks-right span:nth-child(odd),
+.coord-files-bottom span:nth-child(odd) {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.coord-ranks-right span:nth-child(even),
+.coord-files-bottom span:nth-child(even) {
+    color: #3f6b2a;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+
+/* Empty corner placeholders are not needed. */
 .coord-corner {
-    width: 100%;
-    height: 100%;
+    display: none;
 }
 
 /* Square styling */
@@ -684,20 +741,6 @@ body {
     animation: spawnGlow 1s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-/* Board Status Banner */
-.board-status-banner {
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    padding: 8px 20px;
-    border-radius: var(--radius-sm);
-    font-size: 0.95rem;
-    font-weight: 700;
-    color: var(--text-gold);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
 /* Transient notification shown over the board (e.g. "Масти сброшены") */
 .game-toast {
     position: absolute;
@@ -830,6 +873,14 @@ body {
 .history-table-container {
     max-height: 180px;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+/* Keep scrolling functional while hiding the visual scrollbar. */
+.history-table-container::-webkit-scrollbar {
+    display: none;
 }
 
 .history-table {
@@ -1383,11 +1434,6 @@ body {
 
 /* 1. Laptops & Medium Desktops (1081px to 1200px) */
 @media (min-width: 1081px) and (max-width: 1200px) {
-    :root {
-        --board-size: min(420px, calc(100vw - 580px), calc(100vh - 180px));
-        --coord-size: clamp(14px, 2vw, 18px);
-    }
-
     .game-layout {
         grid-template-columns: 210px 1fr 210px;
         gap: 12px;
@@ -1406,8 +1452,6 @@ body {
 /* 2. Tablets & Mobile Portrait (<= 1080px) */
 @media (max-width: 1080px) {
     :root {
-        --board-size: min(480px, calc(100vw - 54px), calc(100vh - 280px));
-        --coord-size: clamp(13px, 2.8vw, 18px);
         --board-container-max: 560px;
     }
 
@@ -1434,7 +1478,14 @@ body {
     .board-wrapper {
         order: 2;
         width: 100%;
-        max-width: var(--board-container-max);
+        max-width: 100%;
+    }
+
+    /* Keep the board inside the first screen even when the stacked player
+       cards are tall. */
+    .board-container {
+        width: min(100%, calc(100vh - 340px));
+        width: min(100%, calc(100dvh - 340px));
     }
 
     #bottomPlayerCard {
@@ -1484,8 +1535,6 @@ body {
 /* 3. Smartphones (<= 640px) */
 @media (max-width: 640px) {
     :root {
-        --board-size: min(calc(100vw - 44px), calc(100dvh - 270px), 380px);
-        --coord-size: clamp(12px, 3.2vw, 16px);
         --board-container-max: 100%;
     }
 
@@ -1498,50 +1547,10 @@ body {
         gap: 8px;
     }
 
-    /* Header Compact */
-    .app-header {
-        padding: 8px 12px;
-        border-radius: var(--radius-sm);
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-
-    .logo-group {
-        gap: 8px;
-    }
-
-    .logo-icon {
-        font-size: 1.5rem;
-    }
-
-    .logo-text h1 {
-        font-size: 1.1rem;
-    }
-
-    .logo-sub {
-        display: none;
-    }
-
-    .header-controls {
-        gap: 6px;
-    }
-
-    /* Compact icon buttons in header on mobile */
-    .header-controls .btn-text {
-        display: none;
-    }
-
-    .header-controls .btn {
-        padding: 6px 10px;
-        font-size: 1rem;
-        gap: 0;
-        border-radius: 6px;
-    }
-
-    .btn-icon-only {
-        padding: 6px 10px;
-        font-size: 1rem;
-        border-radius: 6px;
+    /* Keep the floating menu button aligned with the mobile content padding */
+    .game-menu {
+        top: max(8px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
     }
 
     /* Compact Player Cards */
@@ -1626,22 +1635,11 @@ body {
 
     /* Board Container */
     .board-container {
-        padding: 5px;
-        border-width: 2.5px;
-        border-radius: var(--radius-md);
-    }
-
-    .coord-ranks, .coord-files {
-        font-size: 0.7rem;
-    }
-
-    .board-status-banner {
-        padding: 6px 10px;
-        font-size: 0.82rem;
-        width: 100%;
-        max-width: var(--board-container-max);
-        justify-content: center;
-        text-align: center;
+        --frame-pad: 3px;
+        width: min(100%, calc(100vh - 230px));
+        width: min(100%, calc(100dvh - 230px));
+        border-width: 2px;
+        border-radius: var(--radius-sm);
     }
 
     /* Deck Visual */
@@ -1720,38 +1718,12 @@ body {
 
 /* 4. Small Smartphones (<= 440px) */
 @media (max-width: 440px) {
-    :root {
-        --board-size: min(calc(100vw - 34px), calc(100dvh - 250px), 340px);
-        --coord-size: 12px;
-    }
-
-    /* Hide text labels on header buttons, keep crisp emojis */
-    .header-controls .btn-text {
-        display: none;
-    }
-
-    .header-controls .btn {
-        padding: 6px 8px;
-        font-size: 0.95rem;
-    }
-
-    .logo-text h1 {
-        font-size: 0.98rem;
-        letter-spacing: 0;
-    }
-
-    .logo-icon {
-        font-size: 1.3rem;
-    }
-
     .board-container {
-        padding: 3px;
+        --frame-pad: 2px;
+        width: min(100%, calc(100vh - 210px));
+        width: min(100%, calc(100dvh - 210px));
         border-width: 2px;
         border-radius: var(--radius-sm);
-    }
-
-    .coord-ranks, .coord-files {
-        font-size: 0.62rem;
     }
 
     /* Mode Buttons on tiny screens */
@@ -1801,17 +1773,8 @@ body {
 
 /* 5. Ultra-Small / Foldable Screens (<= 340px) */
 @media (max-width: 340px) {
-    :root {
-        --board-size: min(calc(100vw - 26px), 280px);
-        --coord-size: 10px;
-    }
-
     .app-container {
         padding: 4px;
-    }
-
-    .logo-text h1 {
-        font-size: 0.85rem;
     }
 
     .mode-buttons {
@@ -1823,8 +1786,6 @@ body {
    Covers all mobile devices held horizontally (e.g. 568x320, 667x375, 740x360, 844x390, 896x414, 932x430) */
 @media (orientation: landscape) and (max-height: 560px) {
     :root {
-        --board-size: min(calc(100vh - 56px), calc(100dvh - 56px), 330px, calc(100vw - 290px));
-        --coord-size: clamp(9px, 2.2vh, 13px);
         --board-container-max: 100%;
     }
 
@@ -1847,48 +1808,16 @@ body {
         justify-content: flex-start;
     }
 
-    /* Ultra-Compact Landscape Header */
-    .app-header {
-        padding: 2px 8px;
-        min-height: 28px;
-        max-height: 32px;
-        border-radius: var(--radius-sm);
-        flex-shrink: 0;
-        gap: 6px;
-        flex-wrap: nowrap;
+    /* Keep the floating menu inside the compact landscape padding */
+    .game-menu {
+        top: max(2px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
     }
 
-    .logo-group {
-        gap: 6px;
-    }
-
-    .logo-icon {
-        font-size: 1.1rem;
-    }
-
-    .logo-text h1 {
-        font-size: 0.82rem;
-        letter-spacing: 0.2px;
-    }
-
-    .logo-sub {
-        display: none !important;
-    }
-
-    .header-controls {
-        gap: 4px;
-    }
-
-    .header-controls .btn-text {
-        display: none !important;
-    }
-
-    .header-controls .btn {
-        padding: 2px 7px;
-        font-size: 0.85rem;
-        border-radius: 5px;
-        gap: 0;
-        min-height: 24px;
+    .game-menu-btn {
+        width: 38px;
+        height: 38px;
+        font-size: 1.2rem;
     }
 
     /* 3-Column Ergonomic Landscape Grid */
@@ -1954,24 +1883,12 @@ body {
     }
 
     .board-container {
-        padding: 3px;
+        --frame-pad: 2px;
+        width: min(calc(100vh - 32px), calc(100vw - 302px));
+        width: min(calc(100dvh - 32px), calc(100vw - 302px));
         border-width: 2px;
         border-radius: var(--radius-sm);
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-    }
-
-    .coord-ranks, .coord-files {
-        font-size: 0.65rem;
-    }
-
-    .board-status-banner {
-        padding: 2px 8px;
-        font-size: 0.72rem;
-        min-height: 20px;
-        width: auto;
-        max-width: var(--board-size);
-        border-radius: 4px;
-        margin-top: 1px;
     }
 
     /* Super-Compact Player Cards */
@@ -2214,9 +2131,9 @@ body {
 
 /* Extra-compact for very short landscape heights (<= 360px, e.g. Galaxy S / iPhone 5/SE landscape) */
 @media (orientation: landscape) and (max-height: 360px) {
-    :root {
-        --board-size: min(calc(100vh - 48px), calc(100dvh - 48px), 280px, calc(100vw - 260px));
-        --coord-size: 9px;
+    .board-container {
+        width: min(calc(100vh - 28px), calc(100vw - 302px));
+        width: min(calc(100dvh - 28px), calc(100vw - 302px));
     }
 
     .captures-container {
