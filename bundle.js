@@ -160,35 +160,119 @@ const ALL_BISHOP_TOKENS = [
     { suit: 'diamonds', squareColor: 'light' },
     { suit: 'diamonds', squareColor: 'dark' }
 ];
+const DECK_PIECE_COUNTS = Object.freeze({
+    P: 4,
+    N: 2,
+    B: 2,
+    R: 2,
+    Q: 1
+});
+const ALL_PIECE_TYPES = ['P', 'N', 'B', 'R', 'Q'];
+const STARTING_HAND_SIZE = 7;
+
+const ALL_SUIT_IDS = Object.keys(SUITS);
 
 /**
- * Creates the standard 60-piece card deck for Chess Durak
- * 4 suits * (8 P + 2 N + 2 B + 2 R + 1 Q) = 60 pieces
- * Each suit has strictly 1 light-squared bishop and 1 dark-squared bishop
+ * Normalizes a custom game selection. Invalid or duplicate values are ignored.
+ * Missing arrays fall back to the full standard set.
  */
-function createDeck() {
-    const deck = [];
-    const suitKeys = Object.keys(SUITS);
+function normalizeDeckSelection(config = null) {
+    const rawSuits = config && Array.isArray(config.suits) ? config.suits : ALL_SUIT_IDS;
+    const rawPieces = config && Array.isArray(config.pieces) ? config.pieces : ALL_PIECE_TYPES;
+    const suits = [...new Set(rawSuits)].filter(suit => ALL_SUIT_IDS.includes(suit));
+    const pieces = [...new Set(rawPieces)].filter(type => ALL_PIECE_TYPES.includes(type));
+    return { suits, pieces };
+}
 
-    suitKeys.forEach(suit => {
-        // 8 Pawns
-        for (let i = 0; i < 8; i++) {
-            deck.push({ type: 'P', suit });
+/** Total number of cards produced by the selected suits and piece types. */
+function getDeckCardCount(config = null) {
+    const { suits, pieces } = normalizeDeckSelection(config);
+    const perSuit = pieces.reduce((sum, type) => sum + DECK_PIECE_COUNTS[type], 0);
+    return suits.length * perSuit;
+}
+
+/** Maximum bank size: every deck must still provide 14 starting pieces. */
+function getMaxBankSize(config = null) {
+    return Math.max(0, getDeckCardCount(config) - 2 * STARTING_HAND_SIZE);
+}
+function getDefaultGameConfig() {
+    const selection = normalizeDeckSelection();
+    return {
+        suits: [...selection.suits],
+        pieces: [...selection.pieces],
+        bankSize: getMaxBankSize(selection)
+    };
+}
+
+/**
+ * Normalizes a full game configuration, including the bank size. When no bank
+ * size is supplied, the maximum possible value is used.
+ */
+function normalizeGameConfig(config = null) {
+    const selection = normalizeDeckSelection(config);
+    const maxBank = getMaxBankSize(selection);
+    const bankSize = config && Number.isFinite(config.bankSize)
+        ? Math.trunc(config.bankSize)
+        : maxBank;
+    return {
+        suits: [...selection.suits],
+        pieces: [...selection.pieces],
+        bankSize
+    };
+}
+
+/**
+ * Validates a configuration before a game is started. Throws a user-facing
+ * error when the selection cannot produce a playable game.
+ */
+function validateGameConfig(config = null) {
+    const normalized = normalizeGameConfig(config);
+    if (normalized.suits.length === 0) {
+        throw new Error('Выберите хотя бы одну масть.');
+    }
+    if (normalized.pieces.length === 0) {
+        throw new Error('Выберите хотя бы один тип фигур.');
+    }
+
+    const total = getDeckCardCount(normalized);
+    const maxBank = Math.max(0, total - 2 * STARTING_HAND_SIZE);
+    if (total < 2 * STARTING_HAND_SIZE) {
+        throw new Error('С выбранным составом колоды невозможно сформировать две равные стартовые руки. Попробуйте изменить набор мастей или фигур.');
+    }
+    if (normalized.bankSize < 0 || normalized.bankSize > maxBank) {
+        throw new Error(`Размер банка должен быть от 0 до ${maxBank}.`);
+    }
+    return normalized;
+}
+
+/**
+ * Creates the deck for the selected suits and piece types.
+ * Kings are never part of the deck. The standard card counts per suit are kept.
+ * The deck is shuffled with Fisher-Yates.
+ */
+function createDeck(config = null) {
+    const { suits, pieces } = normalizeDeckSelection(config);
+    const deck = [];
+    const has = (type) => pieces.includes(type);
+
+    for (const suit of suits) {
+        if (has('P')) {
+            for (let i = 0; i < DECK_PIECE_COUNTS.P; i++) deck.push({ type: 'P', suit });
         }
-        // 2 Knights
-        for (let i = 0; i < 2; i++) {
-            deck.push({ type: 'N', suit });
+        if (has('N')) {
+            for (let i = 0; i < DECK_PIECE_COUNTS.N; i++) deck.push({ type: 'N', suit });
         }
-        // 1 Light Bishop and 1 Dark Bishop
-        deck.push({ type: 'B', suit, squareColor: 'light' });
-        deck.push({ type: 'B', suit, squareColor: 'dark' });
-        // 2 Rooks
-        for (let i = 0; i < 2; i++) {
-            deck.push({ type: 'R', suit });
+        if (has('B')) {
+            deck.push({ type: 'B', suit, squareColor: 'light' });
+            deck.push({ type: 'B', suit, squareColor: 'dark' });
         }
-        // 1 Queen
-        deck.push({ type: 'Q', suit });
-    });
+        if (has('R')) {
+            for (let i = 0; i < DECK_PIECE_COUNTS.R; i++) deck.push({ type: 'R', suit });
+        }
+        if (has('Q')) {
+            for (let i = 0; i < DECK_PIECE_COUNTS.Q; i++) deck.push({ type: 'Q', suit });
+        }
+    }
 
     // Shuffle using Fisher-Yates
     for (let i = deck.length - 1; i > 0; i--) {
@@ -205,31 +289,6 @@ const PIECE_VALUES_MAP = {
     R: 5,
     Q: 9
 };
-
-const pieceTypes = ['P', 'N', 'B', 'R', 'Q'];
-
-/**
- * Precompute all valid 7-piece combinations for every odd sum in [7, 41].
- * Max sum 41 is the highest sum simultaneously achievable by both players from the real 60-card deck.
- * Combinations list piece types only; dealPiecesFromDeck() later assigns concrete
- * suited cards so that every hand contains at least one piece of each of the 4 suits.
- */
-const combosBySum = {};
-for (let s = 7; s <= 41; s += 2) combosBySum[s] = [];
-
-function genCombos(idx, count, curSum, chosen) {
-    if (count === 7) {
-        if (combosBySum[curSum]) combosBySum[curSum].push([...chosen]);
-        return;
-    }
-    if (curSum + (7 - count) * 1 > 41) return;
-    if (curSum + (7 - count) * 9 < 7) return;
-    for (let i = idx; i < pieceTypes.length; i++) {
-        const t = pieceTypes[i];
-        genCombos(i, count + 1, curSum + PIECE_VALUES_MAP[t], [...chosen, t]);
-    }
-}
-genCombos(0, 0, 0, []);
 const STARTING_POINTS_RANGE = { min: 7, max: 41 };
 
 /**
@@ -242,6 +301,44 @@ function getRandomStartingPoints() {
         oddSums.push(s);
     }
     return oddSums[Math.floor(Math.random() * oddSums.length)];
+}
+
+// Cached type-only combinations for every selected piece set. A combination
+// lists 7 piece types (repetitions allowed); suits are assigned later.
+const comboCache = new Map();
+
+function getCombosForTypes(pieceTypes) {
+    const orderedTypes = ALL_PIECE_TYPES.filter(type => pieceTypes.includes(type));
+    const key = orderedTypes.join('');
+    if (comboCache.has(key)) return comboCache.get(key);
+
+    const combos = [];
+    const bySum = new Map();
+
+    const collect = (start, remaining, sum, chosen) => {
+        if (remaining === 0) {
+            const combo = {
+                types: [...chosen],
+                counts: countPieceTypes(chosen),
+                sum
+            };
+            combos.push(combo);
+            if (!bySum.has(sum)) bySum.set(sum, []);
+            bySum.get(sum).push(combo);
+            return;
+        }
+        for (let i = start; i < orderedTypes.length; i++) {
+            const type = orderedTypes[i];
+            chosen.push(type);
+            collect(i, remaining - 1, sum + PIECE_VALUES_MAP[type], chosen);
+            chosen.pop();
+        }
+    };
+
+    if (orderedTypes.length > 0) collect(0, STARTING_HAND_SIZE, 0, []);
+    const result = { combos, bySum };
+    comboCache.set(key, result);
+    return result;
 }
 
 /** Fisher-Yates shuffle that returns a shuffled copy. */
@@ -260,7 +357,7 @@ const SUIT_IDS = Object.keys(SUITS);
 // so queens and bishops consume their per-suit slots before the bulk pieces.
 const CARD_CATEGORIES = ['Q', 'BL', 'BD', 'R', 'N', 'P'];
 
-const CATEGORY_SUPPLY_PER_SUIT = { P: 8, N: 2, R: 2, Q: 1, BL: 1, BD: 1 };
+const CATEGORY_SUPPLY_PER_SUIT = { P: 4, N: 2, R: 2, Q: 1, BL: 1, BD: 1 };
 
 /**
  * Counts piece types in a type-only combination (as produced by genCombos).
@@ -287,15 +384,15 @@ function expandCategories(requirements) {
 /**
  * Enumerates legal bishop color splits for the two hands.
  * White base rank has 4 light / 3 dark squares, black base rank 3 light / 4 dark,
- * and the whole deck holds only 4 light and 4 dark bishops.
+ * and a custom deck has one light and one dark bishop per selected suit.
  */
-function getBishopDistributions(bishopsWhite, bishopsBlack) {
+function getBishopDistributions(bishopsWhite, bishopsBlack, totalLight = 4, totalDark = 4) {
     const distributions = [];
     for (let lW = Math.max(0, bishopsWhite - 3); lW <= Math.min(bishopsWhite, 4); lW++) {
         const dW = bishopsWhite - lW;
         for (let lB = Math.max(0, bishopsBlack - 4); lB <= Math.min(bishopsBlack, 3); lB++) {
             const dB = bishopsBlack - lB;
-            if (lW + lB <= 4 && dW + dB <= 4) {
+            if (lW + lB <= totalLight && dW + dB <= totalDark) {
                 distributions.push({ lW, dW, lB, dB });
             }
         }
@@ -307,8 +404,8 @@ function getBishopDistributions(bishopsWhite, bishopsBlack) {
  * Backtracking search that assigns a suit to every card of both hands.
  *
  * Guarantees:
- * - each hand gets exactly 7 cards and covers all 4 suits;
- * - per-suit supplies are respected (8 pawns, 2 knights, 2 rooks, 1 queen,
+ * - each hand gets exactly 7 cards and covers every selected suit;
+ * - per-suit supplies are respected (4 pawns, 2 knights, 2 rooks, 1 queen,
  *   1 light bishop, 1 dark bishop);
  * - the search is exhaustive (suits are tried in random order at every step), so
  *   `null` means the pair of combinations is genuinely impossible and the caller
@@ -316,13 +413,13 @@ function getBishopDistributions(bishopsWhite, bishopsBlack) {
  *
  * Returns { itemsWhite, suitsWhite, itemsBlack, suitsBlack } or null.
  */
-function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
+function assignSuitsToBothHands(requirementsWhite, requirementsBlack, suits = SUIT_IDS) {
     const itemsWhite = expandCategories(requirementsWhite);
     const itemsBlack = expandCategories(requirementsBlack);
     if (itemsWhite.length !== 7 || itemsBlack.length !== 7) return null;
 
     const capacity = {};
-    for (const suit of SUIT_IDS) {
+    for (const suit of suits) {
         capacity[suit] = {};
         for (const category of CARD_CATEGORIES) {
             capacity[suit][category] = CATEGORY_SUPPLY_PER_SUIT[category];
@@ -332,8 +429,8 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
     const suitsWhite = new Array(7);
     const suitsBlack = new Array(7);
     const suitBit = {};
-    SUIT_IDS.forEach((suit, index) => { suitBit[suit] = 1 << index; });
-    const ALL_SUITS = (1 << SUIT_IDS.length) - 1;
+    suits.forEach((suit, index) => { suitBit[suit] = 1 << index; });
+    const ALL_SUITS = (1 << suits.length) - 1;
 
     const countBits = (mask) => {
         let count = 0;
@@ -346,10 +443,10 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
         const category = itemsBlack[index];
         const slotsLeft = itemsBlack.length - index - 1;
 
-        for (const suit of shuffledCopy(SUIT_IDS)) {
+        for (const suit of shuffledCopy(suits)) {
             if (capacity[suit][category] === 0) continue;
             const nextMask = mask | suitBit[suit];
-            if (SUIT_IDS.length - countBits(nextMask) > slotsLeft) continue;
+            if (suits.length - countBits(nextMask) > slotsLeft) continue;
 
             capacity[suit][category]--;
             suitsBlack[index] = suit;
@@ -364,10 +461,10 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
         const category = itemsWhite[index];
         const slotsLeft = itemsWhite.length - index - 1;
 
-        for (const suit of shuffledCopy(SUIT_IDS)) {
+        for (const suit of shuffledCopy(suits)) {
             if (capacity[suit][category] === 0) continue;
             const nextMask = mask | suitBit[suit];
-            if (SUIT_IDS.length - countBits(nextMask) > slotsLeft) continue;
+            if (suits.length - countBits(nextMask) > slotsLeft) continue;
 
             capacity[suit][category]--;
             suitsWhite[index] = suit;
@@ -382,26 +479,54 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack) {
 }
 
 /**
- * Deals 7 suited pieces for White and 7 for Black directly from the real 60-card deck.
+ * Deals 7 suited pieces for White and 7 for Black from the selected deck.
  * Guaranteed:
- * - Equal sums for White and Black equal to targetSum (odd, in [7, 41])
- * - Every hand contains at least one piece of each of the 4 suits
- * - Dealt cards are removed from the deck, leaving exactly 46 cards in deck
+ * - Equal sums for White and Black
+ * - Every hand contains at least one piece of each selected suit
+ * - Dealt cards are removed from the deck; the remaining cards stay shuffled
  * - Strict deck composition is preserved (no duplicate Q of same suit, etc.)
- * - Bishop squareColor constraints match board geometry (White row 7: max 4 light, 3 dark; Black row 0: max 3 light, 4 dark)
+ * - Bishop squareColor constraints match board geometry
+ *
+ * The caller may pass the game configuration explicitly. When it is omitted,
+ * the suits and piece types are inferred from the deck itself.
  */
-function dealPiecesFromDeck(deck, targetSum = null) {
-    if (targetSum === null || targetSum === undefined) {
-        targetSum = getRandomStartingPoints();
-    }
-    if (targetSum < STARTING_POINTS_RANGE.min) targetSum = STARTING_POINTS_RANGE.min;
-    if (targetSum > STARTING_POINTS_RANGE.max) targetSum = STARTING_POINTS_RANGE.max;
-    if (targetSum % 2 === 0) targetSum += 1;
+function dealPiecesFromDeck(deck, targetSum = null, config = null) {
+    const selection = config
+        ? normalizeDeckSelection(config)
+        : {
+            suits: [...new Set(deck.filter(card => card && card.suit).map(card => card.suit))],
+            pieces: [...new Set(deck.filter(card => card && card.type).map(card => card.type))]
+        };
 
-    const validCombos = combosBySum[targetSum];
-    if (!validCombos || validCombos.length === 0) {
-        throw new Error(`No valid combinations for target sum ${targetSum}`);
+    // Only consider cards actually present in this deck.
+    const suits = selection.suits.filter(suit => deck.some(card => card && card.suit === suit));
+    const pieceTypes = selection.pieces.filter(type =>
+        ALL_PIECE_TYPES.includes(type) && deck.some(card => card && card.type === type)
+    );
+
+    const impossibleMessage = 'С выбранным составом колоды невозможно сформировать две равные стартовые руки. Попробуйте изменить набор мастей или фигур.';
+
+    if (deck.length < 2 * STARTING_HAND_SIZE) {
+        throw new Error(impossibleMessage);
     }
+    if (suits.length === 0 || pieceTypes.length === 0 || suits.length > STARTING_HAND_SIZE) {
+        throw new Error(impossibleMessage);
+    }
+
+    // Each hand needs at least one card of every selected suit.
+    for (const suit of suits) {
+        if (deck.filter(card => card && card.suit === suit).length < 2) {
+            throw new Error(impossibleMessage);
+        }
+    }
+
+    const deckTypeCounts = {};
+    for (const type of ALL_PIECE_TYPES) deckTypeCounts[type] = 0;
+    for (const card of deck) {
+        if (card && deckTypeCounts[card.type] !== undefined) deckTypeCounts[card.type]++;
+    }
+
+    const { bySum } = getCombosForTypes(pieceTypes);
 
     // Group the real deck by category so a solved suit assignment can draw
     // concrete cards without ever duplicating one.
@@ -414,83 +539,102 @@ function dealPiecesFromDeck(deck, targetSum = null) {
         cardsByCategory.get(key).push(card);
     }
 
-    const shuffledWhite = shuffledCopy(validCombos);
-    const shuffledBlack = shuffledCopy(validCombos);
+    let candidateSums;
+    if (targetSum !== null && targetSum !== undefined) {
+        let requested = Math.trunc(Number(targetSum));
+        if (!Number.isFinite(requested)) requested = getRandomStartingPoints();
+        if (requested < STARTING_POINTS_RANGE.min) requested = STARTING_POINTS_RANGE.min;
+        if (requested > STARTING_POINTS_RANGE.max) requested = STARTING_POINTS_RANGE.max;
+        if (requested % 2 === 0) requested += 1;
+        candidateSums = [requested];
+    } else {
+        // Try feasible sums in random order so custom decks keep the deal random.
+        candidateSums = shuffledCopy([...bySum.keys()]);
+    }
 
-    for (const comboWhite of shuffledWhite) {
-        const countW = countPieceTypes(comboWhite);
-        for (const comboBlack of shuffledBlack) {
-            const countB = countPieceTypes(comboBlack);
+    for (const sum of candidateSums) {
+        const validCombos = bySum.get(sum);
+        if (!validCombos || validCombos.length === 0) continue;
 
-            let possible = true;
-            for (const t of pieceTypes) {
-                const totalInDeck = (t === 'P' ? 32 : (t === 'Q' ? 4 : 8));
-                if (countW[t] + countB[t] > totalInDeck) {
-                    possible = false;
-                    break;
-                }
-            }
-            if (!possible) continue;
+        const shuffledWhite = shuffledCopy(validCombos);
+        const shuffledBlack = shuffledCopy(validCombos);
 
-            const distributions = shuffledCopy(getBishopDistributions(countW.B, countB.B));
+        for (const comboWhite of shuffledWhite) {
+            const countW = comboWhite.counts;
+            for (const comboBlack of shuffledBlack) {
+                const countB = comboBlack.counts;
 
-            for (const dist of distributions) {
-                const reqW = {
-                    P: countW.P, N: countW.N, R: countW.R, Q: countW.Q,
-                    BL: dist.lW, BD: dist.dW
-                };
-                const reqB = {
-                    P: countB.P, N: countB.N, R: countB.R, Q: countB.Q,
-                    BL: dist.lB, BD: dist.dB
-                };
-
-                const assignment = assignSuitsToBothHands(reqW, reqB);
-                if (!assignment) continue;
-
-                const chosenCards = new Set();
-                const takeCard = (item, suit) => {
-                    const key = item === 'BL'
-                        ? `B|${suit}|light`
-                        : (item === 'BD' ? `B|${suit}|dark` : `${item}|${suit}`);
-                    const pile = cardsByCategory.get(key);
-                    if (!pile || pile.length === 0) {
-                        throw new Error(`Deck has no ${key} card left for target sum ${targetSum}`);
+                let possible = true;
+                for (const t of ALL_PIECE_TYPES) {
+                    if (countW[t] + countB[t] > deckTypeCounts[t]) {
+                        possible = false;
+                        break;
                     }
-                    const card = pile.pop();
-                    chosenCards.add(card);
-                    return card;
-                };
+                }
+                if (!possible) continue;
 
-                const whiteCards = assignment.itemsWhite.map(
-                    (item, i) => takeCard(item, assignment.suitsWhite[i])
-                );
-                const blackCards = assignment.itemsBlack.map(
-                    (item, i) => takeCard(item, assignment.suitsBlack[i])
+                const distributions = shuffledCopy(
+                    getBishopDistributions(countW.B, countB.B, suits.length, suits.length)
                 );
 
-                // Remaining cards form the remaining deck
-                const remainingDeck = deck.filter(card => !chosenCards.has(card));
-                for (let i = remainingDeck.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [remainingDeck[i], remainingDeck[j]] = [remainingDeck[j], remainingDeck[i]];
+                for (const dist of distributions) {
+                    const reqW = {
+                        P: countW.P, N: countW.N, R: countW.R, Q: countW.Q,
+                        BL: dist.lW, BD: dist.dW
+                    };
+                    const reqB = {
+                        P: countB.P, N: countB.N, R: countB.R, Q: countB.Q,
+                        BL: dist.lB, BD: dist.dB
+                    };
+
+                    const assignment = assignSuitsToBothHands(reqW, reqB, suits);
+                    if (!assignment) continue;
+
+                    const chosenCards = new Set();
+                    const takeCard = (item, suit) => {
+                        const key = item === 'BL'
+                            ? `B|${suit}|light`
+                            : (item === 'BD' ? `B|${suit}|dark` : `${item}|${suit}`);
+                        const pile = cardsByCategory.get(key);
+                        if (!pile || pile.length === 0) {
+                            throw new Error(`Deck has no ${key} card left for target sum ${sum}`);
+                        }
+                        const card = pile.pop();
+                        chosenCards.add(card);
+                        return card;
+                    };
+
+                    const whiteCards = assignment.itemsWhite.map(
+                        (item, i) => takeCard(item, assignment.suitsWhite[i])
+                    );
+                    const blackCards = assignment.itemsBlack.map(
+                        (item, i) => takeCard(item, assignment.suitsBlack[i])
+                    );
+
+                    // Remaining cards form the remaining deck
+                    const remainingDeck = deck.filter(card => !chosenCards.has(card));
+                    for (let i = remainingDeck.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [remainingDeck[i], remainingDeck[j]] = [remainingDeck[j], remainingDeck[i]];
+                    }
+
+                    deck.length = 0;
+                    deck.push(...remainingDeck);
+
+                    const whitePieces = whiteCards.map(c =>
+                        createPiece(c.type, 'white', c.suit, c.squareColor || null)
+                    );
+                    const blackPieces = blackCards.map(c =>
+                        createPiece(c.type, 'black', c.suit, c.squareColor || null)
+                    );
+
+                    return { targetSum: sum, whitePieces, blackPieces };
                 }
-
-                deck.length = 0;
-                deck.push(...remainingDeck);
-
-                if (deck.length !== 46) {
-                    throw new Error(`Deck invariant violated: remaining cards count is ${deck.length}, expected 46`);
-                }
-
-                const whitePieces = whiteCards.map(c => createPiece(c.type, 'white', c.suit, c.squareColor || null));
-                const blackPieces = blackCards.map(c => createPiece(c.type, 'black', c.suit, c.squareColor || null));
-
-                return { targetSum, whitePieces, blackPieces };
             }
         }
     }
 
-    throw new Error(`Failed to find compatible piece distribution for target sum ${targetSum}`);
+    throw new Error(impossibleMessage);
 }
 
 // Crisp Vector SVGs for chess pieces.
@@ -651,14 +795,14 @@ class Board {
 
     /**
      * Set up the initial Chess Durak starting board:
-     * - Random target value chosen from 7 to 41 (all 7 odd pieces sum to an odd number)
+     * - Random target value chosen from the achievable odd sums
      * - White King at e1 (7, 4), Black King at e8 (0, 4)
-     * - 7 pieces dealt directly from the 60-card deck to White summing to targetSum
-     * - 7 pieces dealt directly from the 60-card deck to Black summing to targetSum
-     * - Remaining deck invariant: exactly 46 cards
+     * - 7 pieces dealt directly from the selected deck to White summing to targetSum
+     * - 7 pieces dealt directly from the selected deck to Black summing to targetSum
+     * - Remaining cards stay in the deck for the bank
      * Returns targetSum.
      */
-    setupInitialPosition(deck, targetSum = null) {
+    setupInitialPosition(deck, targetSum = null, config = null) {
         // Clear grid
         this.grid = Array(8).fill(null).map(() => Array(8).fill(null));
 
@@ -667,12 +811,8 @@ class Board {
         this.setPiece(0, 4, createPiece('K', 'black', null));
 
         // Deal pieces directly from deck
-        const dealResult = dealPiecesFromDeck(deck, targetSum);
+        const dealResult = dealPiecesFromDeck(deck, targetSum, config);
         const { targetSum: finalSum, whitePieces, blackPieces } = dealResult;
-
-        if (deck.length !== 46) {
-            throw new Error(`Deck invariant violated: expected 46 cards remaining, got ${deck.length}`);
-        }
 
         // Helper to place 7 pieces on base rank strictly matching bishop square colors
         const placeRankPieces = (row, pieces, isWhite) => {
@@ -1032,11 +1172,40 @@ class GameEngine {
         this.suitsResolved = false;  // The empty-bank suit offer was already resolved this game
         this.suitsReset = false;     // All board pieces lost their suits
         this.pendingSuitOffer = false; // Waiting for the player's accept/decline decision
+        this.gameConfig = null;      // Active deck configuration of the current game
     }
 
-    startNewGame(targetSum = null) {
-        this.deck = createDeck();
-        this.startingPoints = this.board.setupInitialPosition(this.deck, targetSum);
+    /**
+     * Starts a new game. A custom configuration may be supplied; the standard
+     * 60-card setup is used when it is omitted.
+     *
+     * All potentially failing work happens on local state first, so an
+     * impossible custom configuration leaves the current game untouched.
+     */
+    startNewGame(targetSum = null, config = null) {
+        const gameConfig = validateGameConfig(config);
+        const deck = createDeck(gameConfig);
+        const newBoard = new Board();
+
+        const finalSum = newBoard.setupInitialPosition(deck, targetSum, gameConfig);
+
+        // Keep exactly the requested number of bank cards. The remaining deck
+        // is already shuffled, so truncation is a random subset.
+        if (deck.length < gameConfig.bankSize) {
+            throw new Error('В колоде недостаточно карт для выбранного размера банка.');
+        }
+        if (deck.length > gameConfig.bankSize) {
+            for (let i = deck.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [deck[i], deck[j]] = [deck[j], deck[i]];
+            }
+            deck.length = gameConfig.bankSize;
+        }
+
+        this.board = newBoard;
+        this.deck = deck;
+        this.gameConfig = gameConfig;
+        this.startingPoints = finalSum;
         this.turn = 'white';
         this.whiteReserve = [];
         this.blackReserve = [];
@@ -1057,6 +1226,16 @@ class GameEngine {
 
         const initialKey = this.getPositionKey();
         this.positionHistory[initialKey] = 1;
+    }
+
+    /**
+     * Suits available in the current game's deck. Standard games use all four.
+     */
+    getActiveSuits() {
+        if (this.gameConfig && Array.isArray(this.gameConfig.suits) && this.gameConfig.suits.length > 0) {
+            return [...this.gameConfig.suits];
+        }
+        return Object.keys(SUITS);
     }
 
     /**
@@ -1181,7 +1360,7 @@ class GameEngine {
         if (this.suitsReset) return takeTopCard();
 
         const present = this.getPresentSuits(color);
-        const missing = ['spades', 'clubs', 'hearts', 'diamonds'].filter(suit => !present.has(suit));
+        const missing = this.getActiveSuits().filter(suit => !present.has(suit));
         if (missing.length === 0) return takeTopCard();
 
         for (let i = this.deck.length - 1; i >= 0; i--) {
@@ -1469,6 +1648,7 @@ class GameEngine {
      * Finds a suitable empty base-rank column for a piece of `playerColor`.
      * Bishops additionally require a square of their own color.
      * Returns null when no suitable square is free.
+     * Used for delayed spawns, which ignore check by design.
      */
     findBaseColumn(playerColor, piece, preferCol = null) {
         const baseRow = playerColor === 'white' ? 7 : 0;
@@ -1482,6 +1662,30 @@ class GameEngine {
     }
 
     /**
+     * Finds a base-rank square where `piece` can appear without giving check.
+     * Possible results:
+     * - { status: 'SAFE', column }  a safe square exists (preferCol wins when safe);
+     * - { status: 'CHECK' }         suitable squares exist, but all give check;
+     * - { status: 'NO_SPACE' }      no suitable empty square exists.
+     */
+    findBasePlacement(playerColor, piece, preferCol = null) {
+        const baseRow = playerColor === 'white' ? 7 : 0;
+        let cols = this.board.getEmptyBaseCols(baseRow);
+        if (piece.type === 'B') {
+            cols = cols.filter(c => ((baseRow + c) % 2 === 0 ? 'light' : 'dark') === piece.squareColor);
+        }
+        if (cols.length === 0) return { status: 'NO_SPACE' };
+
+        const safeCols = cols.filter(c => !this.wouldGiveNewCheck(piece, baseRow, c, playerColor));
+        if (safeCols.length === 0) return { status: 'CHECK' };
+
+        const column = (preferCol !== null && safeCols.includes(preferCol))
+            ? preferCol
+            : safeCols[Math.floor(Math.random() * safeCols.length)];
+        return { status: 'SAFE', column };
+    }
+
+    /**
      * Checks whether the appearing `piece` itself attacks the enemy king from (r, c).
      * A check that already existed (e.g. created by the move that triggered the spawn)
      * is irrelevant: only the piece's own attacks count, so two checking pieces
@@ -1492,13 +1696,20 @@ class GameEngine {
         const enemyKing = this.board.findKing(enemyColor);
         if (!enemyKing) return false;
 
+        const previousPiece = this.board.getPiece(r, c);
         this.board.setPiece(r, c, piece);
-        const attacksKing = GameRules
-            .getPseudoLegalMoves(this.board, r, c)
-            .some(m => m.r === enemyKing.r && m.c === enemyKing.c);
-        this.board.removePiece(r, c);
-
-        return attacksKing;
+        try {
+            return GameRules
+                .getPseudoLegalMoves(this.board, r, c)
+                .some(m => m.r === enemyKing.r && m.c === enemyKing.c);
+        } finally {
+            // Always restore the board, even if the attack check throws.
+            if (previousPiece) {
+                this.board.setPiece(r, c, previousPiece);
+            } else {
+                this.board.removePiece(r, c);
+            }
+        }
     }
 
     /**
@@ -1527,59 +1738,69 @@ class GameEngine {
     }
 
     /**
-     * Deploys the whole reserve of `playerColor` onto its base rank, one suitable piece
-     * after another, for as long as free squares exist.
-     * A reserve piece that would give check on appearance is delayed by one own move.
+     * Deploys the whole reserve of `playerColor` onto its base rank.
+     * Pieces are scanned in reserve order: a piece without a suitable square is
+     * skipped so the following pieces can still appear. A piece is delayed only
+     * when every suitable square would give check.
      */
     deployReserves(playerColor, preferCol = null) {
         const reserve = playerColor === 'white' ? this.whiteReserve : this.blackReserve;
         const baseRow = playerColor === 'white' ? 7 : 0;
 
         while (reserve.length > 0) {
-            let chosenIdx = -1;
-            let chosenCol = null;
+            let acted = false;
 
             for (let i = 0; i < reserve.length; i++) {
-                const col = this.findBaseColumn(playerColor, reserve[i], i === 0 ? preferCol : null);
-                if (col !== null) {
-                    chosenIdx = i;
-                    chosenCol = col;
-                    break;
+                const piece = reserve[i];
+                const placement = this.findBasePlacement(
+                    playerColor,
+                    piece,
+                    i === 0 ? preferCol : null
+                );
+
+                // No suitable square for this piece: keep it and try the next one.
+                if (placement.status === 'NO_SPACE') continue;
+
+                reserve.splice(i, 1);
+                acted = true;
+
+                if (placement.status === 'CHECK') {
+                    // Rule: a piece that would give check on appearance is delayed by one own move
+                    this.delayedSpawns.push({ piece, player: playerColor });
+                    this.spawnEvents.push({
+                        piece,
+                        player: playerColor,
+                        type: 'delayed_check_queued'
+                    });
+                } else {
+                    this.board.setPiece(baseRow, placement.column, piece);
+                    this.spawnEvents.push({
+                        piece,
+                        r: baseRow,
+                        c: placement.column,
+                        type: 'reserve_spawn'
+                    });
                 }
+
+                // Restart the scan so the remaining pieces keep their order.
+                break;
             }
 
-            // No reservist can be placed (base rank full or bishop colors exhausted)
-            if (chosenIdx === -1) break;
-
-            const piece = reserve.splice(chosenIdx, 1)[0];
-
-            if (this.wouldGiveNewCheck(piece, baseRow, chosenCol, playerColor)) {
-                // Rule: a piece that would give check on appearance is delayed by one own move
-                this.delayedSpawns.push({ piece, player: playerColor });
-                this.spawnEvents.push({
-                    piece,
-                    player: playerColor,
-                    type: 'delayed_check_queued'
-                });
-            } else {
-                this.board.setPiece(baseRow, chosenCol, piece);
-                this.spawnEvents.push({
-                    piece,
-                    r: baseRow,
-                    c: chosenCol,
-                    type: 'reserve_spawn'
-                });
-            }
+            // Nothing can be placed or delayed: the base rank cannot accept the rest.
+            if (!acted) break;
         }
     }
 
     /**
-     * Places a freshly drawn bank piece on its owner's base rank,
-     * or queues it to the reserve when the base rank has no suitable square.
+     * Places a freshly drawn bank piece using the same placement rules as reserves:
+     * a safe square immediately, a checking-only board into delayedSpawns, and
+     * no suitable square into the reserve.
      */
     placeBankPiece(piece, playerColor) {
-        const col = this.findBaseColumn(playerColor, piece);
-        if (col === null) {
+        const baseRow = playerColor === 'white' ? 7 : 0;
+        const placement = this.findBasePlacement(playerColor, piece);
+
+        if (placement.status === 'NO_SPACE') {
             (playerColor === 'white' ? this.whiteReserve : this.blackReserve).push(piece);
             this.spawnEvents.push({
                 piece,
@@ -1589,8 +1810,7 @@ class GameEngine {
             return;
         }
 
-        const baseRow = playerColor === 'white' ? 7 : 0;
-        if (this.wouldGiveNewCheck(piece, baseRow, col, playerColor)) {
+        if (placement.status === 'CHECK') {
             // Rule: a piece that would give check on appearance is delayed by one own move
             this.delayedSpawns.push({ piece, player: playerColor });
             this.spawnEvents.push({
@@ -1598,16 +1818,17 @@ class GameEngine {
                 player: playerColor,
                 type: 'delayed_check_queued'
             });
-        } else {
-            this.board.setPiece(baseRow, col, piece);
-            this.spawnEvents.push({
-                piece,
-                player: playerColor,
-                r: baseRow,
-                c: col,
-                type: 'bank_spawn'
-            });
+            return;
         }
+
+        this.board.setPiece(baseRow, placement.column, piece);
+        this.spawnEvents.push({
+            piece,
+            player: playerColor,
+            r: baseRow,
+            c: placement.column,
+            type: 'bank_spawn'
+        });
     }
 
     formatNotation(originalType, originalSuit, currentPiece, fromR, fromC, toR, toC, captured, isPromotion, isCheck, isCheckmate) {
@@ -1976,10 +2197,11 @@ class ChessDurakApp {
         this.engine = new GameEngine();
         this.ai = new ChessDurakAI(this.engine);
 
-        this.gameMode = 'hotseat'; // 'hotseat' | 'ai-white' | 'ai-black' | 'tutorial'
+        this.gameMode = 'hotseat'; // 'hotseat' | 'ai-white' | 'ai-black' | 'tutorial' | 'custom'
         this.difficulty = 'medium';
         this.aiSelectedSide = 'white'; // 'white' | 'black' | 'random'
         this.aiSelectedDiff = 'medium';// 'easy' | 'medium' | 'hard'
+        this.customGameConfig = null;  // Last successfully started custom configuration
         this.isFlipped = false;
         this.selectedSquare = null;    // { r, c }
         this.legalMoves = [];          // array of { r, c, isCapture }
@@ -2046,9 +2268,25 @@ class ChessDurakApp {
             modeHotseatBtn: document.getElementById('modeHotseatBtn'),
             modeAiBtn: document.getElementById('modeAiBtn'),
             modeTutorialBtn: document.getElementById('modeTutorialBtn'),
+            modeCustomBtn: document.getElementById('modeCustomBtn'),
             aiActiveStatus: document.getElementById('aiActiveStatus'),
             aiStatusTag: document.getElementById('aiStatusTag'),
             changeAiSettingsBtn: document.getElementById('changeAiSettingsBtn'),
+
+            // Custom Game Settings Modal
+            customSettingsModal: document.getElementById('customSettingsModal'),
+            closeCustomSettingsBtn: document.getElementById('closeCustomSettingsBtn'),
+            cancelCustomSettingsBtn: document.getElementById('cancelCustomSettingsBtn'),
+            startCustomGameBtn: document.getElementById('startCustomGameBtn'),
+            customSuitCheckboxes: document.querySelectorAll('.custom-suit-checkbox'),
+            customPieceCheckboxes: document.querySelectorAll('.custom-piece-checkbox'),
+            customBankSlider: document.getElementById('customBankSlider'),
+            customBankValue: document.getElementById('customBankValue'),
+            customBankMaxLabel: document.getElementById('customBankMaxLabel'),
+            customSummaryTotal: document.getElementById('customSummaryTotal'),
+            customSummaryBank: document.getElementById('customSummaryBank'),
+            customSummaryUnused: document.getElementById('customSummaryUnused'),
+            customSettingsError: document.getElementById('customSettingsError'),
 
             // AI Settings Modal
             aiSettingsModal: document.getElementById('aiSettingsModal'),
@@ -2304,6 +2542,20 @@ class ChessDurakApp {
             this.startNewGame();
         });
 
+        // Mode Switching: Custom Game (the click only opens the settings modal)
+        this.dom.modeCustomBtn.addEventListener('click', () => this.openCustomSettings());
+        this.dom.closeCustomSettingsBtn.addEventListener('click', () => this.closeCustomSettings());
+        this.dom.cancelCustomSettingsBtn.addEventListener('click', () => this.closeCustomSettings());
+        this.dom.startCustomGameBtn.addEventListener('click', () => this.startCustomGame());
+
+        this.dom.customSuitCheckboxes.forEach(cb => {
+            cb.addEventListener('change', () => this.refreshCustomSettings());
+        });
+        this.dom.customPieceCheckboxes.forEach(cb => {
+            cb.addEventListener('change', () => this.refreshCustomSettings());
+        });
+        this.dom.customBankSlider.addEventListener('input', () => this.refreshCustomSettings());
+
         // Tutorial Modal & Lessons
         this.dom.openTutorialLessonsBtn.addEventListener('click', () => {
             this.tutorialStep = 1;
@@ -2365,6 +2617,107 @@ class ChessDurakApp {
     setActiveModeBtn(activeBtn) {
         this.dom.modeButtons.forEach(b => b.classList.remove('active'));
         if (activeBtn) activeBtn.classList.add('active');
+    }
+
+    /**
+     * Opens the custom game settings. The form shows the last successfully
+     * applied configuration, or the full standard deck on first launch.
+     */
+    openCustomSettings() {
+        const config = this.customGameConfig || getDefaultGameConfig();
+        const normalized = normalizeGameConfig(config);
+        const suitSet = new Set(normalized.suits);
+        const pieceSet = new Set(normalized.pieces);
+
+        this.dom.customSuitCheckboxes.forEach(cb => {
+            cb.checked = suitSet.has(cb.value);
+        });
+        this.dom.customPieceCheckboxes.forEach(cb => {
+            cb.checked = pieceSet.has(cb.value);
+        });
+
+        const maxBank = getMaxBankSize(normalized);
+        this.dom.customBankSlider.max = String(maxBank);
+        this.dom.customBankSlider.value = String(Math.min(Math.max(normalized.bankSize, 0), maxBank));
+        this.dom.customSettingsError.textContent = '';
+        this.refreshCustomSettings();
+        this.dom.customSettingsModal.classList.add('open');
+    }
+
+    /**
+     * Closes the modal and discards the draft: nothing is applied until the
+     * game starts successfully.
+     */
+    closeCustomSettings() {
+        this.dom.customSettingsModal.classList.remove('open');
+    }
+
+    getCustomFormConfig() {
+        return {
+            suits: Array.from(this.dom.customSuitCheckboxes)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value),
+            pieces: Array.from(this.dom.customPieceCheckboxes)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value),
+            bankSize: Number(this.dom.customBankSlider.value)
+        };
+    }
+
+    /**
+     * Recalculates the bank limit and the summary from the current draft.
+     */
+    refreshCustomSettings() {
+        const config = this.getCustomFormConfig();
+        const total = getDeckCardCount(config);
+        const maxBank = getMaxBankSize(config);
+        const slider = this.dom.customBankSlider;
+
+        slider.max = String(maxBank);
+        let bankSize = Number(slider.value);
+        if (!Number.isFinite(bankSize)) bankSize = 0;
+        bankSize = Math.trunc(bankSize);
+        if (bankSize < 0) bankSize = 0;
+        if (bankSize > maxBank) bankSize = maxBank;
+        slider.value = String(bankSize);
+
+        const unused = Math.max(0, total - 2 * STARTING_HAND_SIZE - bankSize);
+
+        this.dom.customBankValue.textContent = String(bankSize);
+        this.dom.customBankMaxLabel.textContent = String(maxBank);
+        this.dom.customSummaryTotal.textContent = String(total);
+        this.dom.customSummaryBank.textContent = String(bankSize);
+        this.dom.customSummaryUnused.textContent = String(unused);
+
+        // A previous error no longer applies after the user edits the form.
+        if (this.dom.customSettingsError.textContent) {
+            this.dom.customSettingsError.textContent = '';
+        }
+    }
+
+    /**
+     * Validates the draft and only then starts a new game. On failure the
+     * modal stays open with an explanation and the current game is untouched.
+     */
+    startCustomGame() {
+        let config;
+        try {
+            config = validateGameConfig(this.getCustomFormConfig());
+        } catch (err) {
+            this.dom.customSettingsError.textContent = err.message;
+            return;
+        }
+
+        const result = this.startNewGame(config);
+        if (!result || !result.ok) {
+            const message = result && result.error && result.error.message
+                ? result.error.message
+                : 'Не удалось начать игру с выбранными настройками.';
+            this.dom.customSettingsError.textContent = message;
+            return;
+        }
+
+        this.closeCustomSettings();
     }
 
     /**
@@ -2569,7 +2922,39 @@ class ChessDurakApp {
         }
     }
 
-    startNewGame() {
+    /**
+     * Starts a new game.
+     *
+     * An explicit custom configuration is validated and dealt inside the engine
+     * before any UI state is touched, so a failed configuration cannot disturb
+     * the current game. Without an explicit configuration the standard deck is
+     * used, except that an active custom game reuses its saved settings.
+     */
+    startNewGame(config = undefined) {
+        const explicitCustom = config !== undefined && config !== null;
+        const effectiveConfig = explicitCustom
+            ? config
+            : (this.gameMode === 'custom' ? this.customGameConfig : null);
+
+        let appliedConfig = null;
+        try {
+            this.engine.startNewGame(null, effectiveConfig);
+            if (effectiveConfig) {
+                appliedConfig = normalizeGameConfig(effectiveConfig);
+            }
+        } catch (err) {
+            return { ok: false, error: err };
+        }
+
+        if (appliedConfig) {
+            this.customGameConfig = appliedConfig;
+            this.gameMode = 'custom';
+            this.setActiveModeBtn(this.dom.modeCustomBtn);
+            this.dom.aiActiveStatus.style.display = 'none';
+            this.dom.tutorialCard.style.display = 'none';
+            this.isFlipped = false;
+        }
+
         if (this.aiTimer) {
             clearTimeout(this.aiTimer);
             this.aiTimer = null;
@@ -2578,7 +2963,6 @@ class ChessDurakApp {
         this.isAiThinking = false;
         this.drawOfferDeclined = false;
 
-        this.engine.startNewGame();
         this.selectedSquare = null;
         this.legalMoves = [];
         this.hintSquares = null;
@@ -2604,6 +2988,8 @@ class ChessDurakApp {
         sounds.spawn();
 
         this.checkTriggerAI();
+
+        return { ok: true, config: appliedConfig };
     }
 
     toggleFlipBoard() {
@@ -2829,7 +3215,7 @@ class ChessDurakApp {
         grid.innerHTML = '';
 
         const pieceTypes = ['Q', 'R', 'B', 'N'];
-        const suitKeys = ['spades', 'clubs', 'hearts', 'diamonds'];
+        const suitKeys = this.engine.getActiveSuits();
         const suitsReset = this.engine.suitsReset;
 
         if (this.dom.promotionPrompt) {
