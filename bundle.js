@@ -800,19 +800,18 @@ class Board {
      * - 7 pieces dealt directly from the selected deck to White summing to targetSum
      * - 7 pieces dealt directly from the selected deck to Black summing to targetSum
      * - Remaining cards stay in the deck for the bank
+     *
+     * The pieces are rearranged on the base ranks until isPlacementValid(this)
+     * accepts the position. Up to 10 redeals and 2000 layouts per deal are tried.
+     * A random starting sum is locked after the first deal, so replacing the
+     * columns never changes the starting points.
+     *
      * Returns targetSum.
      */
-    setupInitialPosition(deck, targetSum = null, config = null) {
-        // Clear grid
-        this.grid = Array(8).fill(null).map(() => Array(8).fill(null));
-
-        // Place Kings
-        this.setPiece(7, 4, createPiece('K', 'white', null));
-        this.setPiece(0, 4, createPiece('K', 'black', null));
-
-        // Deal pieces directly from deck
-        const dealResult = dealPiecesFromDeck(deck, targetSum, config);
-        const { targetSum: finalSum, whitePieces, blackPieces } = dealResult;
+    setupInitialPosition(deck, targetSum = null, config = null, isPlacementValid = null) {
+        const originalDeck = [...deck];
+        let effectiveTargetSum = targetSum;
+        let finalSum = null;
 
         // Helper to place 7 pieces on base rank strictly matching bishop square colors
         const placeRankPieces = (row, pieces, isWhite) => {
@@ -844,13 +843,41 @@ class Board {
             }
         };
 
-        // Deal to White on Rank 1 (row 7)
-        placeRankPieces(7, whitePieces, true);
+        for (let dealAttempt = 0; dealAttempt < 10; dealAttempt++) {
+            // Restore the untouched deck before every redeal
+            deck.length = 0;
+            deck.push(...originalDeck);
 
-        // Deal to Black on Rank 8 (row 0)
-        placeRankPieces(0, blackPieces, false);
+            const dealResult = dealPiecesFromDeck(deck, effectiveTargetSum, config);
+            const { targetSum: dealtSum, whitePieces, blackPieces } = dealResult;
+            finalSum = dealtSum;
 
-        return finalSum;
+            // Lock the random starting sum after the first deal
+            if (effectiveTargetSum === null || effectiveTargetSum === undefined) {
+                effectiveTargetSum = dealtSum;
+            }
+
+            // Kings are identical across all layouts of this deal
+            const whiteKing = createPiece('K', 'white', null);
+            const blackKing = createPiece('K', 'black', null);
+
+            for (let placementAttempt = 0; placementAttempt < 2000; placementAttempt++) {
+                // Clear the board and place the kings
+                this.grid = Array(8).fill(null).map(() => Array(8).fill(null));
+                this.setPiece(7, 4, whiteKing);
+                this.setPiece(0, 4, blackKing);
+
+                // Lay out both starting hands on their base ranks
+                placeRankPieces(7, whitePieces, true);
+                placeRankPieces(0, blackPieces, false);
+
+                if (typeof isPlacementValid !== 'function' || isPlacementValid(this)) {
+                    return finalSum;
+                }
+            }
+        }
+
+        throw new Error('Не удалось раздать фигуры без доступных взятий. Попробуйте изменить состав колоды.');
     }
 
     /**
@@ -1145,6 +1172,17 @@ class GameRules {
         }
         return allMoves;
     }
+
+    /**
+     * True when at least one piece of either color has a legal capture.
+     * Used to validate the starting placement.
+     */
+    static hasAnyCapture(board) {
+        for (const color of ['white', 'black']) {
+            if (this.getAllLegalMoves(board, color).some(m => m.isCapture)) return true;
+        }
+        return false;
+    }
 }
 
 /**
@@ -1187,7 +1225,12 @@ class GameEngine {
         const deck = createDeck(gameConfig);
         const newBoard = new Board();
 
-        const finalSum = newBoard.setupInitialPosition(deck, targetSum, gameConfig);
+        const finalSum = newBoard.setupInitialPosition(
+            deck,
+            targetSum,
+            gameConfig,
+            board => !GameRules.hasAnyCapture(board)
+        );
 
         // Keep exactly the requested number of bank cards. The remaining deck
         // is already shuffled, so truncation is a random subset.

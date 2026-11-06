@@ -996,6 +996,7 @@ body {
 .modal-footer {
     display: flex;
     justify-content: flex-end;
+    gap: 10px;
     margin-top: 20px;
 }
 
@@ -1122,6 +1123,26 @@ body {
     font-size: 1.8rem;
     line-height: 1;
     margin-bottom: 4px;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.side-option-btn[data-side="white"] .side-icon {
+    background: #e2e8f0;
+    color: #0f172a;
+    box-shadow: 0 2px 8px rgba(255, 255, 255, 0.2);
+}
+
+.side-option-btn[data-side="black"] .side-icon {
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .side-name {
@@ -1932,6 +1953,9 @@ body {
 
     .side-icon {
         font-size: 1.4rem;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
     }
 
     .side-name,
