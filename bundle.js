@@ -2481,6 +2481,8 @@ class ChessDurakApp {
                 // Refusing once silences the offer for the rest of the game,
                 // otherwise it would pop up again on every later move.
                 this.drawOfferDeclined = true;
+                // In tutorial mode the bot may still owe a reply
+                this.checkTriggerAI();
             });
         }
         if (this.dom.drawOfferModal) {
@@ -2489,6 +2491,7 @@ class ChessDurakApp {
                     this.dom.drawOfferModal.classList.remove('open');
                     // Closing the modal counts as a refusal as well
                     this.drawOfferDeclined = true;
+                    this.checkTriggerAI();
                 }
             });
         }
@@ -2578,9 +2581,10 @@ class ChessDurakApp {
         this.dom.modeTutorialBtn.addEventListener('click', () => {
             this.setActiveModeBtn(this.dom.modeTutorialBtn);
             this.gameMode = 'tutorial';
+            this.difficulty = 'easy'; // Tutorial always plays against the beginner bot
             this.dom.aiActiveStatus.style.display = 'none';
             this.dom.tutorialCard.style.display = 'block';
-            this.dom.tutorialTipText.textContent = '💡 Режим обучения: наводите на фигуры для подсветки целей, используйте подсказки и отмену ходов!';
+            this.dom.tutorialTipText.textContent = '💡 Вы играете белыми против бота-новичка. Наводите на фигуры для подсветки целей, используйте подсказки и отмену ходов!';
             this.isFlipped = false;
             this.startNewGame();
         });
@@ -2910,7 +2914,7 @@ class ChessDurakApp {
         }
 
         // If playing against AI, undo once more if we landed on AI's turn
-        if ((this.gameMode === 'ai-white' || this.gameMode === 'ai-black') && this.isAiTurn()) {
+        if (this.isVersusBot() && this.isAiTurn()) {
             this.engine.undoMove();
         }
 
@@ -2930,9 +2934,16 @@ class ChessDurakApp {
         }
     }
 
+    isVersusBot() {
+        return this.gameMode === 'ai-white' ||
+               this.gameMode === 'ai-black' ||
+               this.gameMode === 'tutorial';
+    }
+
     isAiTurn() {
         return (this.gameMode === 'ai-white' && this.engine.turn === 'black') ||
-               (this.gameMode === 'ai-black' && this.engine.turn === 'white');
+               (this.gameMode === 'ai-black' && this.engine.turn === 'white') ||
+               (this.gameMode === 'tutorial' && this.engine.turn === 'black');
     }
 
     rebuildHistoryTable() {
@@ -3197,8 +3208,7 @@ class ChessDurakApp {
         if (this.engine.isGameOver()) return;
 
         // Check if it's user's turn in AI mode
-        if (this.gameMode === 'ai-white' && this.engine.turn === 'black') return;
-        if (this.gameMode === 'ai-black' && this.engine.turn === 'white') return;
+        if (this.isAiTurn()) return;
 
         const clickedPiece = this.engine.board.getPiece(r, c);
 
@@ -3338,8 +3348,16 @@ class ChessDurakApp {
 
         // Check Victory
         if (result.status === 'checkmate') {
-            const winnerName = result.winner === 'white' ? 'Белых' : 'Чёрных';
-            this.showVictoryModal(`Мат! Победа ${winnerName}`, `Игрок (${winnerName}) поставил мат сопернику.`);
+            if (this.gameMode === 'tutorial') {
+                if (result.winner === 'white') {
+                    this.showVictoryModal('Мат! Вы победили!', 'Вы поставили мат боту-новичку. Отличная работа!');
+                } else {
+                    this.showVictoryModal('Мат! Победил бот-новичок', 'Бот-новичок поставил мат. Попробуйте ещё раз — подсказка и отмена хода помогут.');
+                }
+            } else {
+                const winnerName = result.winner === 'white' ? 'Белых' : 'Чёрных';
+                this.showVictoryModal(`Мат! Победа ${winnerName}`, `Игрок (${winnerName}) поставил мат сопернику.`);
+            }
             return;
         } else if (result.status === 'stalemate') {
             this.showVictoryModal(`Пат! Ничья`, `У игрока нет доступных ходов, но король не под шахом.`);
@@ -3470,11 +3488,15 @@ class ChessDurakApp {
             displayName = isWhite ? 'Игрок (Белые)' : 'Компьютер (Чёрные)';
         } else if (this.gameMode === 'ai-black') {
             displayName = isWhite ? 'Компьютер (Белые)' : 'Игрок (Чёрные)';
+        } else if (this.gameMode === 'tutorial') {
+            displayName = isWhite ? 'Вы (Белые)' : 'Компьютер (Чёрные)';
         }
         nameEl.textContent = displayName;
 
-        const isAiSide = (this.gameMode === 'ai-white' && !isWhite) ||
-                         (this.gameMode === 'ai-black' && isWhite);
+        const isAiSide = this.gameMode === 'tutorial'
+            ? !isWhite
+            : ((this.gameMode === 'ai-white' && !isWhite) ||
+               (this.gameMode === 'ai-black' && isWhite));
 
         if (isTurn) {
             const inCheck = this.engine.status === 'check';
