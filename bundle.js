@@ -195,6 +195,18 @@ function getDeckCardCount(config = null) {
 function getMaxBankSize(config = null) {
     return Math.max(0, getDeckCardCount(config) - 2 * STARTING_HAND_SIZE);
 }
+
+/**
+ * Minimum number of extra random cards needed to reach a 14-piece starting
+ * deal. The actual top-up may add more when the deal is structurally
+ * impossible, so this value is only a lower bound for the UI.
+ */
+function getStartingDealShortfall(config = null) {
+    return Math.max(
+        0,
+        2 * STARTING_HAND_SIZE - getDeckCardCount(config)
+    );
+}
 function getDefaultGameConfig() {
     const selection = normalizeDeckSelection();
     return {
@@ -234,15 +246,105 @@ function validateGameConfig(config = null) {
         throw new Error('Выберите хотя бы один тип фигур.');
     }
 
+    // A deck shorter than 14 cards is allowed: the missing pieces are topped
+    // up randomly from the selected suits and types before the deal.
     const total = getDeckCardCount(normalized);
     const maxBank = Math.max(0, total - 2 * STARTING_HAND_SIZE);
-    if (total < 2 * STARTING_HAND_SIZE) {
-        throw new Error('С выбранным составом колоды невозможно сформировать две равные стартовые руки. Попробуйте изменить набор мастей или фигур.');
-    }
     if (normalized.bankSize < 0 || normalized.bankSize > maxBank) {
         throw new Error(`Размер банка должен быть от 0 до ${maxBank}.`);
     }
+    if (
+        normalized.suits.length === 1 &&
+        normalized.pieces.some(type => type === 'B' || type === 'R' || type === 'Q')
+    ) {
+        throw new Error(
+            'С одной мастью нельзя использовать слонов, ладей или ферзей: ' +
+            'на заполненных базовых горизонталях они всегда имеют доступное взятие. ' +
+            'Добавьте ещё масти или оставьте только пешек и коней.'
+        );
+    }
     return normalized;
+}
+
+/**
+ * Creates one random card from the selected suits and piece types, using the
+ * same type weights as the standard deck. Bishops get a random square color.
+ */
+function createRandomSelectionCard(suits, pieces) {
+    const suit = suits[Math.floor(Math.random() * suits.length)];
+    const totalWeight = pieces.reduce(
+        (sum, type) => sum + DECK_PIECE_COUNTS[type], 0
+    );
+    let roll = Math.random() * totalWeight;
+    let type = pieces[pieces.length - 1];
+    for (const candidate of pieces) {
+        roll -= DECK_PIECE_COUNTS[candidate];
+        if (roll < 0) { type = candidate; break; }
+    }
+    const card = { type, suit };
+    if (type === 'B') {
+        card.squareColor = Math.random() < 0.5 ? 'light' : 'dark';
+    }
+    return card;
+}
+
+/**
+ * Tops up a custom deck so that a valid 14-piece starting deal can be formed.
+ * The added cards use only the selected suits and piece types. Returns the
+ * number of added cards. The standard 44-card selection is left untouched.
+ */
+function completeDeckForStartingDeal(deck, config = null) {
+    const { suits, pieces } = normalizeDeckSelection(config);
+    if (suits.length === 0 || pieces.length === 0) return 0;
+
+    const isStandardSelection =
+        suits.length === ALL_SUIT_IDS.length &&
+        pieces.length === ALL_PIECE_TYPES.length;
+    if (isStandardSelection && deck.length >= 2 * STARTING_HAND_SIZE) return 0;
+
+    const initialLength = deck.length;
+
+    // Every selected suit must be present in both hands.
+    for (const suit of suits) {
+        while (deck.filter(card => card.suit === suit).length < 2) {
+            deck.push(createRandomSelectionCard([suit], pieces));
+        }
+    }
+
+    // Both hands together need at least 14 cards.
+    while (deck.length < 2 * STARTING_HAND_SIZE) {
+        deck.push(createRandomSelectionCard(suits, pieces));
+    }
+
+    const canDeal = () => {
+        try {
+            dealPiecesFromDeck(deck.slice(), null, config);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    let guard = 0;
+    while (!canDeal()) {
+        if (++guard > 200) {
+            throw new Error(
+                'Не удалось подобрать добор фигур для выбранных настроек. ' +
+                'Попробуйте изменить набор мастей или типов.'
+            );
+        }
+        deck.push(createRandomSelectionCard(suits, pieces));
+    }
+
+    const added = deck.length - initialLength;
+    if (added > 0) {
+        // Added cards must not cluster at the start or the end of the bank.
+        for (let i = deck.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [deck[i], deck[j]] = [deck[j], deck[i]];
+        }
+    }
+    return added;
 }
 
 /**
@@ -351,13 +453,9 @@ function shuffledCopy(items) {
     return copy;
 }
 
-const SUIT_IDS = Object.keys(SUITS);
-
 // "BL"/"BD" are light- and dark-squared bishops; the order is scarcest-first,
 // so queens and bishops consume their per-suit slots before the bulk pieces.
 const CARD_CATEGORIES = ['Q', 'BL', 'BD', 'R', 'N', 'P'];
-
-const CATEGORY_SUPPLY_PER_SUIT = { P: 4, N: 2, R: 2, Q: 1, BL: 1, BD: 1 };
 
 /**
  * Counts piece types in a type-only combination (as produced by genCombos).
@@ -383,8 +481,9 @@ function expandCategories(requirements) {
 
 /**
  * Enumerates legal bishop color splits for the two hands.
- * White base rank has 4 light / 3 dark squares, black base rank 3 light / 4 dark,
- * and a custom deck has one light and one dark bishop per selected suit.
+ * White base rank has 4 light / 3 dark squares, black base rank 3 light / 4 dark.
+ * The `totalLight`/`totalDark` limits are taken from the real deck, so topped-up
+ * decks with extra bishops are handled correctly.
  */
 function getBishopDistributions(bishopsWhite, bishopsBlack, totalLight = 4, totalDark = 4) {
     const distributions = [];
@@ -405,32 +504,45 @@ function getBishopDistributions(bishopsWhite, bishopsBlack, totalLight = 4, tota
  *
  * Guarantees:
  * - each hand gets exactly 7 cards and covers every selected suit;
- * - per-suit supplies are respected (4 pawns, 2 knights, 2 rooks, 1 queen,
- *   1 light bishop, 1 dark bishop);
+ * - per-suit supplies come from the real deck (so topped-up duplicates work);
+ * - when `requireSuitBalance` is set, every suit appears at most 7 times
+ *   across both hands. The kings occupy one file, so the remaining 7 files
+ *   must each hold a white and a black piece; a suit with 8+ pieces would
+ *   force two same-suit pieces into one file, which is exactly what rooks and
+ *   queens can capture. This condition is necessary and sufficient for such a
+ *   pairing (Hall's theorem on the suit-conflict graph);
  * - the search is exhaustive (suits are tried in random order at every step), so
  *   `null` means the pair of combinations is genuinely impossible and the caller
  *   can safely try the next pair.
  *
+ * `capacity` is mutated during the search and restored on backtracking.
+ *
  * Returns { itemsWhite, suitsWhite, itemsBlack, suitsBlack } or null.
  */
-function assignSuitsToBothHands(requirementsWhite, requirementsBlack, suits = SUIT_IDS) {
+function assignSuitsToBothHands(
+    requirementsWhite,
+    requirementsBlack,
+    suits,
+    capacity,
+    requireSuitBalance = false
+) {
     const itemsWhite = expandCategories(requirementsWhite);
     const itemsBlack = expandCategories(requirementsBlack);
     if (itemsWhite.length !== 7 || itemsBlack.length !== 7) return null;
 
-    const capacity = {};
-    for (const suit of suits) {
-        capacity[suit] = {};
-        for (const category of CARD_CATEGORIES) {
-            capacity[suit][category] = CATEGORY_SUPPLY_PER_SUIT[category];
-        }
-    }
-
     const suitsWhite = new Array(7);
     const suitsBlack = new Array(7);
     const suitBit = {};
-    suits.forEach((suit, index) => { suitBit[suit] = 1 << index; });
+    const suitIndex = {};
+    suits.forEach((suit, index) => {
+        suitBit[suit] = 1 << index;
+        suitIndex[suit] = index;
+    });
     const ALL_SUITS = (1 << suits.length) - 1;
+    const suitTotals = new Array(suits.length).fill(0);
+
+    const canUseSuit = (suit) => !requireSuitBalance ||
+        suitTotals[suitIndex[suit]] < STARTING_HAND_SIZE;
 
     const countBits = (mask) => {
         let count = 0;
@@ -445,12 +557,15 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack, suits = SU
 
         for (const suit of shuffledCopy(suits)) {
             if (capacity[suit][category] === 0) continue;
+            if (!canUseSuit(suit)) continue;
             const nextMask = mask | suitBit[suit];
             if (suits.length - countBits(nextMask) > slotsLeft) continue;
 
             capacity[suit][category]--;
+            suitTotals[suitIndex[suit]]++;
             suitsBlack[index] = suit;
             if (placeBlack(index + 1, nextMask)) return true;
+            suitTotals[suitIndex[suit]]--;
             capacity[suit][category]++;
         }
         return false;
@@ -463,12 +578,15 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack, suits = SU
 
         for (const suit of shuffledCopy(suits)) {
             if (capacity[suit][category] === 0) continue;
+            if (!canUseSuit(suit)) continue;
             const nextMask = mask | suitBit[suit];
             if (suits.length - countBits(nextMask) > slotsLeft) continue;
 
             capacity[suit][category]--;
+            suitTotals[suitIndex[suit]]++;
             suitsWhite[index] = suit;
             if (placeWhite(index + 1, nextMask)) return true;
+            suitTotals[suitIndex[suit]]--;
             capacity[suit][category]++;
         }
         return false;
@@ -484,8 +602,10 @@ function assignSuitsToBothHands(requirementsWhite, requirementsBlack, suits = SU
  * - Equal sums for White and Black
  * - Every hand contains at least one piece of each selected suit
  * - Dealt cards are removed from the deck; the remaining cards stay shuffled
- * - Strict deck composition is preserved (no duplicate Q of same suit, etc.)
+ * - Cards are taken from the real deck, so topped-up duplicates are allowed
  * - Bishop squareColor constraints match board geometry
+ * - For custom decks with rooks/queens, each suit is spread over at most 7
+ *   pieces so the 7 free files can be paired without same-suit columns
  *
  * The caller may pass the game configuration explicitly. When it is omitted,
  * the suits and piece types are inferred from the deck itself.
@@ -520,6 +640,34 @@ function dealPiecesFromDeck(deck, targetSum = null, config = null) {
         }
     }
 
+    // The standard 44-card selection keeps its historical behaviour: mixed
+    // deals can still be placed when one suit has 8+ pieces, because the
+    // forced same-suit file pair may consist of pawns/knights, which cannot
+    // capture along a file. Custom decks with rooks or queens need a strict
+    // balance: every suit must fit into the 7 files left by the kings.
+    const isStandardSelection =
+        suits.length === ALL_SUIT_IDS.length &&
+        pieceTypes.length === ALL_PIECE_TYPES.length;
+    const requireSuitBalance = !isStandardSelection &&
+        (pieceTypes.includes('R') || pieceTypes.includes('Q'));
+
+    // Supply limits are derived from the real deck, not from the standard
+    // per-suit counts: a topped-up deck may legitimately contain duplicates.
+    const capacity = {};
+    for (const suit of suits) {
+        capacity[suit] = { P: 0, N: 0, B: 0, R: 0, Q: 0, BL: 0, BD: 0 };
+    }
+    for (const card of deck) {
+        if (!card || !capacity[card.suit]) continue;
+        if (card.type === 'B') {
+            capacity[card.suit][card.squareColor === 'light' ? 'BL' : 'BD']++;
+        } else if (capacity[card.suit][card.type] !== undefined) {
+            capacity[card.suit][card.type]++;
+        }
+    }
+    const totalLightBishops = suits.reduce((n, s) => n + capacity[s].BL, 0);
+    const totalDarkBishops = suits.reduce((n, s) => n + capacity[s].BD, 0);
+
     const deckTypeCounts = {};
     for (const type of ALL_PIECE_TYPES) deckTypeCounts[type] = 0;
     for (const card of deck) {
@@ -541,12 +689,32 @@ function dealPiecesFromDeck(deck, targetSum = null, config = null) {
 
     let candidateSums;
     if (targetSum !== null && targetSum !== undefined) {
-        let requested = Math.trunc(Number(targetSum));
-        if (!Number.isFinite(requested)) requested = getRandomStartingPoints();
-        if (requested < STARTING_POINTS_RANGE.min) requested = STARTING_POINTS_RANGE.min;
-        if (requested > STARTING_POINTS_RANGE.max) requested = STARTING_POINTS_RANGE.max;
-        if (requested % 2 === 0) requested += 1;
-        candidateSums = [requested];
+        const requested = Math.trunc(Number(targetSum));
+        if (Number.isFinite(requested)) {
+            // Custom decks can reach sums outside the standard 7-41 range
+            // (for example rooks+queens reach 51). Pick the achievable sum
+            // closest to the request instead of clamping it. An exact match
+            // keeps redeals stable when the first deal locked its sum.
+            let nearest = null;
+            for (const sum of bySum.keys()) {
+                if (nearest === null) {
+                    nearest = sum;
+                    continue;
+                }
+                const distance = Math.abs(sum - requested);
+                const bestDistance = Math.abs(nearest - requested);
+                // On a tie prefer the higher sum so even standard requests
+                // round up exactly as before (40 -> 41).
+                if (distance < bestDistance ||
+                    (distance === bestDistance && sum > nearest)) {
+                    nearest = sum;
+                }
+            }
+            candidateSums = nearest === null ? [] : [nearest];
+        } else {
+            // A non-numeric target behaves like an omitted one.
+            candidateSums = shuffledCopy([...bySum.keys()]);
+        }
     } else {
         // Try feasible sums in random order so custom decks keep the deal random.
         candidateSums = shuffledCopy([...bySum.keys()]);
@@ -574,7 +742,12 @@ function dealPiecesFromDeck(deck, targetSum = null, config = null) {
                 if (!possible) continue;
 
                 const distributions = shuffledCopy(
-                    getBishopDistributions(countW.B, countB.B, suits.length, suits.length)
+                    getBishopDistributions(
+                        countW.B,
+                        countB.B,
+                        totalLightBishops,
+                        totalDarkBishops
+                    )
                 );
 
                 for (const dist of distributions) {
@@ -587,7 +760,9 @@ function dealPiecesFromDeck(deck, targetSum = null, config = null) {
                         BL: dist.lB, BD: dist.dB
                     };
 
-                    const assignment = assignSuitsToBothHands(reqW, reqB, suits);
+                    const assignment = assignSuitsToBothHands(
+                        reqW, reqB, suits, capacity, requireSuitBalance
+                    );
                     if (!assignment) continue;
 
                     const chosenCards = new Set();
@@ -809,6 +984,7 @@ class Board {
      * Returns targetSum.
      */
     setupInitialPosition(deck, targetSum = null, config = null, isPlacementValid = null) {
+        completeDeckForStartingDeal(deck, config);
         const originalDeck = [...deck];
         let effectiveTargetSum = targetSum;
         let finalSum = null;
@@ -1186,9 +1362,35 @@ class GameRules {
 }
 
 /**
- * Game Engine managing game loop, bank, reserves, turn cycle, and notation
+ * Deterministic RNG used for base-rank spawn columns. It can be cloned so a
+ * simulation starts from exactly the same random sequence as the real engine.
  */
-class GameEngine {
+class SeededRng {
+    constructor(seed = 1) {
+        this.state = seed >>> 0;
+    }
+
+    next() {
+        // mulberry32
+        let t = this.state += 0x6D2B79F5;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
+
+    clone() {
+        const r = new SeededRng(0);
+        r.state = this.state;
+        return r;
+    }
+}
+
+/**
+ * Complete mutable game state plus the rules that do not need history.
+ * GameEngine extends this with snapshots, notation and repetition tracking,
+ * so the AI can clone and simulate the exact same state the engine uses.
+ */
+class GameState {
     constructor() {
         this.board = new Board();
         this.deck = [];
@@ -1197,78 +1399,24 @@ class GameEngine {
         this.blackReserve = [];
         this.capturedWhite = [];
         this.capturedBlack = [];
-        this.moveHistory = [];
+        this.delayedSpawns = [];
+        this.spawnEvents = [];
         this.status = 'playing'; // 'playing' | 'check' | 'checkmate' | 'stalemate' | 'repetition'
         this.winner = null;      // 'white' | 'black' | 'draw' | null
         this.drawReason = null;  // 'stalemate' | 'agreement' | 'suits_agreement' | null
-        this.lastMove = null;
-        this.spawnEvents = [];   // Log of newly spawned pieces
-        this.snapshots = [];     // State snapshots for undo
-        this.delayedSpawns = []; // Pieces delayed by 1 turn because spawning gave check
-        this.positionHistory = {}; // Key -> count for threefold repetition
-        this.startingPoints = 0; // Total starting points per player
-        this.suitsResolved = false;  // The empty-bank suit offer was already resolved this game
-        this.suitsReset = false;     // All board pieces lost their suits
-        this.pendingSuitOffer = false; // Waiting for the player's accept/decline decision
-        this.gameConfig = null;      // Active deck configuration of the current game
-    }
-
-    /**
-     * Starts a new game. A custom configuration may be supplied; the standard
-     * 60-card setup is used when it is omitted.
-     *
-     * All potentially failing work happens on local state first, so an
-     * impossible custom configuration leaves the current game untouched.
-     */
-    startNewGame(targetSum = null, config = null) {
-        const gameConfig = validateGameConfig(config);
-        const deck = createDeck(gameConfig);
-        const newBoard = new Board();
-
-        const finalSum = newBoard.setupInitialPosition(
-            deck,
-            targetSum,
-            gameConfig,
-            board => !GameRules.hasAnyCapture(board)
-        );
-
-        // Keep exactly the requested number of bank cards. The remaining deck
-        // is already shuffled, so truncation is a random subset.
-        if (deck.length < gameConfig.bankSize) {
-            throw new Error('В колоде недостаточно карт для выбранного размера банка.');
-        }
-        if (deck.length > gameConfig.bankSize) {
-            for (let i = deck.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [deck[i], deck[j]] = [deck[j], deck[i]];
-            }
-            deck.length = gameConfig.bankSize;
-        }
-
-        this.board = newBoard;
-        this.deck = deck;
-        this.gameConfig = gameConfig;
-        this.startingPoints = finalSum;
-        this.turn = 'white';
-        this.whiteReserve = [];
-        this.blackReserve = [];
-        this.capturedWhite = [];
-        this.capturedBlack = [];
-        this.moveHistory = [];
-        this.status = 'playing';
-        this.winner = null;
-        this.drawReason = null;
-        this.lastMove = null;
-        this.spawnEvents = [];
-        this.snapshots = [];
-        this.delayedSpawns = [];
-        this.positionHistory = {};
         this.suitsResolved = false;
         this.suitsReset = false;
         this.pendingSuitOffer = false;
+        this.gameConfig = null;
+        this.rng = null; // null => Math.random(); object with next()/clone() => seeded
+    }
 
-        const initialKey = this.getPositionKey();
-        this.positionHistory[initialKey] = 1;
+    /**
+     * Single source of randomness for spawn columns.
+     */
+    nextRandom() {
+        if (!this.rng) return Math.random();
+        return typeof this.rng === 'function' ? this.rng() : this.rng.next();
     }
 
     /**
@@ -1279,88 +1427,6 @@ class GameEngine {
             return [...this.gameConfig.suits];
         }
         return Object.keys(SUITS);
-    }
-
-    /**
-     * True when the current status means the game is over (no further moves allowed)
-     */
-    isGameOver() {
-        return this.status === 'checkmate' ||
-               this.status === 'stalemate' ||
-               this.status === 'repetition';
-    }
-
-    /**
-     * Creates a unique canonical key for the current game position
-     */
-    getPositionKey() {
-        let key = `${this.turn}|`;
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const p = this.board.grid[r][c];
-                if (p) {
-                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''}`;
-                    // Pawn's two-square right depends on hasMoved, so it is part of the position
-                    if (p.type === 'P') {
-                        key += `H${p.hasMoved ? 1 : 0}`;
-                    }
-                    key += ';';
-                }
-            }
-        }
-        key += '|W_RES:';
-        for (const p of this.whiteReserve) {
-            key += `${p.type}${p.suit}${p.squareColor || ''};`;
-        }
-        key += '|B_RES:';
-        for (const p of this.blackReserve) {
-            key += `${p.type}${p.suit}${p.squareColor || ''};`;
-        }
-        key += '|DELAY:';
-        for (const d of this.delayedSpawns) {
-            key += `${d.player}:${d.piece.type}${d.piece.suit || 'X'}${d.piece.squareColor || ''};`;
-        }
-        return key;
-    }
-
-    /**
-     * Records the current position in the threefold repetition history and
-     * returns its key. Used after a suit reset, because the resulting position
-     * is new and its first appearance must be counted.
-     */
-    recordCurrentPosition() {
-        const key = this.getPositionKey();
-        this.positionHistory[key] = (this.positionHistory[key] || 0) + 1;
-        return key;
-    }
-
-    /**
-     * Undo last executed move and restore previous board state
-     */
-    undoMove() {
-        if (!this.snapshots || this.snapshots.length === 0) {
-            return false;
-        }
-        const prev = this.snapshots.pop();
-        this.board = prev.board;
-        this.turn = prev.turn;
-        this.deck = prev.deck ? [...prev.deck] : [];
-        this.whiteReserve = prev.whiteReserve ? prev.whiteReserve.map(p => ({ ...p })) : [];
-        this.blackReserve = prev.blackReserve ? prev.blackReserve.map(p => ({ ...p })) : [];
-        this.capturedWhite = prev.capturedWhite ? prev.capturedWhite.map(p => ({ ...p })) : [];
-        this.capturedBlack = prev.capturedBlack ? prev.capturedBlack.map(p => ({ ...p })) : [];
-        this.moveHistory = prev.moveHistory;
-        this.status = prev.status;
-        this.winner = prev.winner;
-        this.drawReason = prev.drawReason ?? null;
-        this.lastMove = prev.lastMove;
-        this.spawnEvents = [];
-        this.delayedSpawns = prev.delayedSpawns ? prev.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })) : [];
-        this.positionHistory = prev.positionHistory ? { ...prev.positionHistory } : {};
-        this.suitsResolved = !!prev.suitsResolved;
-        this.suitsReset = !!prev.suitsReset;
-        this.pendingSuitOffer = !!prev.pendingSuitOffer;
-        return true;
     }
 
     /**
@@ -1415,279 +1481,6 @@ class GameEngine {
     }
 
     /**
-     * Execute a move from (fromR, fromC) to (toR, toC)
-     * Optional promotionChoice: { type: 'Q'|'R'|'B'|'N', suit: 'spades'|'clubs'|'hearts'|'diamonds' }
-     * After engine.suitsReset the suit is omitted (or null) and the piece stays suitless.
-     * Returns result object with move details
-     */
-    makeMove(fromR, fromC, toR, toC, promotionChoice = null) {
-        if (this.pendingSuitOffer) {
-            return { success: false, reason: 'Pending suit offer' };
-        }
-        if (this.isGameOver()) {
-            return { success: false, reason: 'Game over' };
-        }
-
-        const piece = this.board.getPiece(fromR, fromC);
-        if (!piece || piece.color !== this.turn) {
-            return { success: false, reason: 'Not your turn or no piece' };
-        }
-
-        const legalMoves = GameRules.getLegalMoves(this.board, fromR, fromC);
-        const isValid = legalMoves.some(m => m.r === toR && m.c === toC);
-        if (!isValid) {
-            return { success: false, reason: 'Illegal move' };
-        }
-
-        // Remember whether any spawn queue (reserves / delayed appearance)
-        // existed before the move: emptying queues is an offer trigger.
-        const hadSpawnQueue = this.whiteReserve.length > 0 ||
-            this.blackReserve.length > 0 ||
-            this.delayedSpawns.length > 0;
-
-        // Save state snapshot before mutating. Pieces are shallow-copied because
-        // every piece field is a primitive, but lists and the board must be
-        // independent so that undo restores suits exactly.
-        this.snapshots.push({
-            board: this.board.clone(),
-            turn: this.turn,
-            deck: [...this.deck],
-            whiteReserve: this.whiteReserve.map(p => ({ ...p })),
-            blackReserve: this.blackReserve.map(p => ({ ...p })),
-            capturedWhite: this.capturedWhite.map(p => ({ ...p })),
-            capturedBlack: this.capturedBlack.map(p => ({ ...p })),
-            moveHistory: [...this.moveHistory],
-            status: this.status,
-            winner: this.winner,
-            drawReason: this.drawReason,
-            lastMove: this.lastMove ? { ...this.lastMove } : null,
-            delayedSpawns: this.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })),
-            positionHistory: { ...this.positionHistory },
-            suitsResolved: this.suitsResolved,
-            suitsReset: this.suitsReset,
-            pendingSuitOffer: this.pendingSuitOffer
-        });
-
-        this.spawnEvents = [];
-        const movingColor = this.turn;
-        const opponentColor = movingColor === 'white' ? 'black' : 'white';
-        const capturedPiece = this.board.getPiece(toR, toC);
-
-        // 1. Move piece
-        this.board.removePiece(fromR, fromC);
-        this.board.setPiece(toR, toC, piece);
-        piece.hasMoved = true;
-
-        const movingPieceType = piece.type;
-        const movingPieceSuit = piece.suit;
-
-        // 2. Handle Pawn Promotion (any stronger piece + any suit chosen by player)
-        // After a suit reset there are no suits left, so only the piece type is chosen.
-        let isPromotion = false;
-        if (piece.type === 'P') {
-            const promoRank = movingColor === 'white' ? 0 : 7;
-            if (toR === promoRank) {
-                isPromotion = true;
-                const suitsAreReset = this.suitsReset;
-                const hasValidChoice = promotionChoice && promotionChoice.type &&
-                    (suitsAreReset || promotionChoice.suit);
-                if (hasValidChoice) {
-                    piece.type = promotionChoice.type;
-                    piece.suit = suitsAreReset ? null : promotionChoice.suit;
-                    if (piece.type === 'B') {
-                        piece.squareColor = (toR + toC) % 2 === 0 ? 'light' : 'dark';
-                    } else {
-                        piece.squareColor = null;
-                    }
-                } else {
-                    piece.type = 'Q'; // Fallback to Queen
-                    if (suitsAreReset) piece.suit = null;
-                    piece.squareColor = null;
-                }
-            }
-        }
-
-        // 3. Handle Capture and Bank Draw (placement is deferred: reserves get priority)
-        let bankPiece = null;
-        if (capturedPiece) {
-            if (capturedPiece.color === 'white') {
-                this.capturedWhite.push(capturedPiece);
-            } else {
-                this.capturedBlack.push(capturedPiece);
-            }
-
-            // Opponent draws a replacement card from the bank
-            if (this.deck.length > 0) {
-                const card = this.drawBankCardFor(opponentColor);
-                bankPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
-            }
-        }
-
-        // 4. Handle Moving Player's Delayed Spawns (Rule: appears after the player's move)
-        const movingBaseRow = movingColor === 'white' ? 7 : 0;
-        const preferCol = fromR === movingBaseRow ? fromC : null;
-        const remainingDelayed = [];
-        for (const delayed of this.delayedSpawns) {
-            if (delayed.player === movingColor) {
-                this.tryPlaceDelayedSpawn(delayed, movingColor, preferCol);
-            } else {
-                remainingDelayed.push(delayed);
-            }
-        }
-        this.delayedSpawns = remainingDelayed;
-
-        // 5. Deploy reserves for BOTH sides after every move (repeatedly, while
-        //    a matching empty base-rank square remains). Reserves always get
-        //    priority over a freshly drawn bank piece.
-        this.deployReserves(movingColor, preferCol);
-        this.deployReserves(opponentColor);
-
-        // 5b. Only now place the bank replacement drawn in step 3, so that
-        //     reservists are never bypassed by a new card.
-        if (bankPiece) {
-            this.placeBankPiece(bankPiece, opponentColor);
-        }
-
-        // 6. Check Game Status for Opponent
-        const isOpponentInCheck = GameRules.isKingInCheck(this.board, opponentColor);
-        const opponentMoves = GameRules.getAllLegalMoves(this.board, opponentColor);
-
-        let moveNotation = this.formatNotation(movingPieceType, movingPieceSuit, piece, fromR, fromC, toR, toC, capturedPiece, isPromotion, isOpponentInCheck, opponentMoves.length === 0 && isOpponentInCheck);
-
-        // A move clears any previous draw reason; only a stalemate below can set it again
-        this.drawReason = null;
-
-        if (opponentMoves.length === 0) {
-            if (isOpponentInCheck) {
-                this.status = 'checkmate';
-                this.winner = movingColor;
-            } else {
-                this.status = 'stalemate';
-                this.winner = 'draw';
-                this.drawReason = 'stalemate';
-            }
-        } else if (isOpponentInCheck) {
-            this.status = 'check';
-        } else {
-            this.status = 'playing';
-        }
-
-        this.lastMove = {
-            from: { r: fromR, c: fromC },
-            to: { r: toR, c: toC },
-            piece,
-            captured: capturedPiece,
-            notation: moveNotation,
-            spawnEvents: [...this.spawnEvents]
-        };
-
-        this.moveHistory.push(this.lastMove);
-
-        // 7. Switch turn
-        this.turn = opponentColor;
-
-        // 8. Empty-bank suit offer: evaluated once per move, after captures, reserve
-        //    deployment and delayed spawns are fully processed, and after the
-        //    mate/stalemate status is known. While the offer is pending, threefold
-        //    repetition is intentionally not processed for this move.
-        const suitDrawOffer = this.shouldOfferSuitDraw({
-            hadCapture: !!capturedPiece,
-            hadPromotion: isPromotion,
-            hadSpawnQueue
-        });
-
-        if (suitDrawOffer) {
-            this.pendingSuitOffer = true;
-            return {
-                success: true,
-                lastMove: this.lastMove,
-                status: this.status,
-                winner: this.winner,
-                threefold: false,
-                suitDrawOffer: true,
-                positionKey: this.getPositionKey()
-            };
-        }
-
-        // 9. Check Threefold Repetition
-        const currentPosKey = this.getPositionKey();
-        this.positionHistory[currentPosKey] = (this.positionHistory[currentPosKey] || 0) + 1;
-        const isThreefold = this.positionHistory[currentPosKey] >= 3;
-
-        return {
-            success: true,
-            lastMove: this.lastMove,
-            status: this.status,
-            winner: this.winner,
-            threefold: isThreefold,
-            suitDrawOffer: false,
-            positionKey: currentPosKey
-        };
-    }
-
-    /**
-     * Collects the sets of suits still present on each side's board pieces.
-     * Kings and suitless pieces are ignored: only real suited pieces count.
-     */
-    getBoardSuitSets() {
-        const white = new Set();
-        const black = new Set();
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const p = this.board.getPiece(r, c);
-                if (!p || !p.suit || p.type === 'K') continue;
-                (p.color === 'white' ? white : black).add(p.suit);
-            }
-        }
-        return { white, black };
-    }
-
-    /**
-     * True when the "empty bank + different suits" draw should be offered.
-     * All conditions must hold:
-     * - the bank (deck) is empty, both reserves and the delayed queue are empty;
-     * - both sides still have at least one suited board piece and their suit sets
-     *   do not intersect;
-     * - the offer was not resolved earlier this game;
-     * - the move did not finish the game by mate or stalemate;
-     * - this move captured, promoted, or emptied the spawn queues.
-     */
-    shouldOfferSuitDraw({ hadCapture = false, hadPromotion = false, hadSpawnQueue = false } = {}) {
-        if (this.suitsResolved || this.pendingSuitOffer) return false;
-        if (!hadCapture && !hadPromotion && !hadSpawnQueue) return false;
-        if (this.deck.length !== 0) return false;
-        if (this.whiteReserve.length > 0 || this.blackReserve.length > 0 || this.delayedSpawns.length > 0) {
-            return false;
-        }
-        if (this.status === 'checkmate' || this.status === 'stalemate') return false;
-
-        const { white, black } = this.getBoardSuitSets();
-        if (white.size === 0 || black.size === 0) return false;
-        for (const suit of white) {
-            if (black.has(suit)) return false;
-        }
-        return true;
-    }
-
-    /**
-     * Removes suits from every piece that is still in play (board, reserves and the
-     * delayed queue). Captured pieces keep the suit they were captured with, and
-     * bishop square colours are never touched.
-     */
-    resetSuits() {
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board.getPiece(r, c);
-                if (piece) piece.suit = null;
-            }
-        }
-        for (const piece of this.whiteReserve) piece.suit = null;
-        for (const piece of this.blackReserve) piece.suit = null;
-        for (const delayed of this.delayedSpawns) delayed.piece.suit = null;
-        this.suitsReset = true;
-    }
-
-    /**
      * Finds a suitable empty base-rank column for a piece of `playerColor`.
      * Bishops additionally require a square of their own color.
      * Returns null when no suitable square is free.
@@ -1701,7 +1494,7 @@ class GameEngine {
         }
         if (cols.length === 0) return null;
         if (preferCol !== null && cols.includes(preferCol)) return preferCol;
-        return cols[Math.floor(Math.random() * cols.length)];
+        return cols[Math.floor(this.nextRandom() * cols.length)];
     }
 
     /**
@@ -1724,7 +1517,7 @@ class GameEngine {
 
         const column = (preferCol !== null && safeCols.includes(preferCol))
             ? preferCol
-            : safeCols[Math.floor(Math.random() * safeCols.length)];
+            : safeCols[Math.floor(this.nextRandom() * safeCols.length)];
         return { status: 'SAFE', column };
     }
 
@@ -1874,6 +1667,502 @@ class GameEngine {
         });
     }
 
+    /**
+     * Applies one legal move and every consequence of it: promotion, capture,
+     * bank draw, delayed spawns, reserve deployment, status and turn switch.
+     * It intentionally does not touch history, notation, repetition or the
+     * suit-draw offer; GameEngine.makeMove() adds those on top.
+     */
+    applyMoveCore(fromR, fromC, toR, toC, promotionChoice = null) {
+        this.spawnEvents = [];
+        const movingColor = this.turn;
+        const opponentColor = movingColor === 'white' ? 'black' : 'white';
+        const capturedPiece = this.board.getPiece(toR, toC);
+        const piece = this.board.getPiece(fromR, fromC);
+
+        // 1. Move piece
+        this.board.removePiece(fromR, fromC);
+        this.board.setPiece(toR, toC, piece);
+        piece.hasMoved = true;
+
+        const movingPieceType = piece.type;
+        const movingPieceSuit = piece.suit;
+
+        // 2. Handle Pawn Promotion (any stronger piece + any suit chosen by player)
+        // After a suit reset there are no suits left, so only the piece type is chosen.
+        let isPromotion = false;
+        if (piece.type === 'P') {
+            const promoRank = movingColor === 'white' ? 0 : 7;
+            if (toR === promoRank) {
+                isPromotion = true;
+                const suitsAreReset = this.suitsReset;
+                const hasValidChoice = promotionChoice && promotionChoice.type &&
+                    (suitsAreReset || promotionChoice.suit);
+                if (hasValidChoice) {
+                    piece.type = promotionChoice.type;
+                    piece.suit = suitsAreReset ? null : promotionChoice.suit;
+                    if (piece.type === 'B') {
+                        piece.squareColor = (toR + toC) % 2 === 0 ? 'light' : 'dark';
+                    } else {
+                        piece.squareColor = null;
+                    }
+                } else {
+                    piece.type = 'Q'; // Fallback to Queen
+                    if (suitsAreReset) piece.suit = null;
+                    piece.squareColor = null;
+                }
+            }
+        }
+
+        // 3. Handle Capture and Bank Draw (placement is deferred: reserves get priority)
+        let bankPiece = null;
+        if (capturedPiece) {
+            if (capturedPiece.color === 'white') {
+                this.capturedWhite.push(capturedPiece);
+            } else {
+                this.capturedBlack.push(capturedPiece);
+            }
+
+            // Opponent draws a replacement card from the bank
+            if (this.deck.length > 0) {
+                const card = this.drawBankCardFor(opponentColor);
+                bankPiece = createPiece(card.type, opponentColor, card.suit, card.squareColor || null);
+            }
+        }
+
+        // 4. Handle Moving Player's Delayed Spawns (Rule: appears after the player's move)
+        const movingBaseRow = movingColor === 'white' ? 7 : 0;
+        const preferCol = fromR === movingBaseRow ? fromC : null;
+        const remainingDelayed = [];
+        for (const delayed of this.delayedSpawns) {
+            if (delayed.player === movingColor) {
+                this.tryPlaceDelayedSpawn(delayed, movingColor, preferCol);
+            } else {
+                remainingDelayed.push(delayed);
+            }
+        }
+        this.delayedSpawns = remainingDelayed;
+
+        // 5. Deploy reserves for BOTH sides after every move (repeatedly, while
+        //    a matching empty base-rank square remains). Reserves always get
+        //    priority over a freshly drawn bank piece.
+        this.deployReserves(movingColor, preferCol);
+        this.deployReserves(opponentColor);
+
+        // 5b. Only now place the bank replacement drawn in step 3, so that
+        //     reservists are never bypassed by a new card.
+        if (bankPiece) {
+            this.placeBankPiece(bankPiece, opponentColor);
+        }
+
+        // 6. Check Game Status for Opponent
+        const isOpponentInCheck = GameRules.isKingInCheck(this.board, opponentColor);
+        const opponentMoves = GameRules.getAllLegalMoves(this.board, opponentColor);
+
+        // A move clears any previous draw reason; only a stalemate below can set it again
+        this.drawReason = null;
+
+        if (opponentMoves.length === 0) {
+            if (isOpponentInCheck) {
+                this.status = 'checkmate';
+                this.winner = movingColor;
+            } else {
+                this.status = 'stalemate';
+                this.winner = 'draw';
+                this.drawReason = 'stalemate';
+            }
+        } else if (isOpponentInCheck) {
+            this.status = 'check';
+        } else {
+            this.status = 'playing';
+        }
+
+        // 7. Switch turn
+        this.turn = opponentColor;
+
+        return {
+            movingColor,
+            opponentColor,
+            movingPiece: piece,
+            capturedPiece,
+            isPromotion,
+            movingPieceType,
+            movingPieceSuit,
+            opponentInCheck: isOpponentInCheck,
+            opponentMoves,
+            spawnEvents: [...this.spawnEvents]
+        };
+    }
+
+    /**
+     * Independent copy of the complete state, used by the AI search.
+     */
+    cloneState() {
+        const s = new GameState();
+        s.board = this.board.clone();
+        s.deck = [...this.deck]; // bank cards are only read and popped, never mutated
+        s.whiteReserve = this.whiteReserve.map(p => ({ ...p }));
+        s.blackReserve = this.blackReserve.map(p => ({ ...p }));
+        s.capturedWhite = this.capturedWhite.map(p => ({ ...p }));
+        s.capturedBlack = this.capturedBlack.map(p => ({ ...p }));
+        s.delayedSpawns = this.delayedSpawns.map(d => ({
+            piece: { ...d.piece },
+            player: d.player
+        }));
+        s.spawnEvents = [];
+        s.turn = this.turn;
+        s.status = this.status;
+        s.winner = this.winner;
+        s.drawReason = this.drawReason;
+        s.suitsResolved = this.suitsResolved;
+        s.suitsReset = this.suitsReset;
+        s.pendingSuitOffer = this.pendingSuitOffer;
+        s.gameConfig = this.gameConfig;
+        s.rng = this.rng && typeof this.rng.clone === 'function'
+            ? this.rng.clone()
+            : this.rng;
+        return s;
+    }
+}
+
+/**
+ * Game Engine managing game loop, bank, reserves, turn cycle, and notation
+ */
+class GameEngine extends GameState {
+    constructor() {
+        super();
+        this.moveHistory = [];
+        this.lastMove = null;
+        this.snapshots = [];     // State snapshots for undo
+        this.positionHistory = {}; // Key -> count for threefold repetition
+        this.startingPoints = 0; // Total starting points per player
+    }
+
+    /**
+     * Starts a new game. A custom configuration may be supplied; the standard
+     * 44-card setup is used when it is omitted.
+     *
+     * All potentially failing work happens on local state first, so an
+     * impossible custom configuration leaves the current game untouched.
+     */
+    startNewGame(targetSum = null, config = null) {
+        const gameConfig = validateGameConfig(config);
+        const deck = createDeck(gameConfig);
+        const newBoard = new Board();
+
+        const finalSum = newBoard.setupInitialPosition(
+            deck,
+            targetSum,
+            gameConfig,
+            board => !GameRules.hasAnyCapture(board)
+        );
+
+        // Keep exactly the requested number of bank cards. The remaining deck
+        // is already shuffled, so truncation is a random subset.
+        if (deck.length < gameConfig.bankSize) {
+            throw new Error('В колоде недостаточно карт для выбранного размера банка.');
+        }
+        if (deck.length > gameConfig.bankSize) {
+            for (let i = deck.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [deck[i], deck[j]] = [deck[j], deck[i]];
+            }
+            deck.length = gameConfig.bankSize;
+        }
+
+        this.board = newBoard;
+        this.deck = deck;
+        this.gameConfig = gameConfig;
+        this.startingPoints = finalSum;
+        this.turn = 'white';
+        this.whiteReserve = [];
+        this.blackReserve = [];
+        this.capturedWhite = [];
+        this.capturedBlack = [];
+        this.moveHistory = [];
+        this.status = 'playing';
+        this.winner = null;
+        this.drawReason = null;
+        this.lastMove = null;
+        this.spawnEvents = [];
+        this.snapshots = [];
+        this.delayedSpawns = [];
+        this.positionHistory = {};
+        this.suitsResolved = false;
+        this.suitsReset = false;
+        this.pendingSuitOffer = false;
+        this.rng = new SeededRng((Math.random() * 0x100000000) >>> 0);
+
+        const initialKey = this.getPositionKey();
+        this.positionHistory[initialKey] = 1;
+    }
+
+    /**
+     * True when the current status means the game is over (no further moves allowed)
+     */
+    isGameOver() {
+        return this.status === 'checkmate' ||
+               this.status === 'stalemate' ||
+               this.status === 'repetition';
+    }
+
+    /**
+     * Creates a unique canonical key for the current game position
+     */
+    getPositionKey() {
+        let key = `${this.turn}|`;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = this.board.grid[r][c];
+                if (p) {
+                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''}`;
+                    // Pawn's two-square right depends on hasMoved, so it is part of the position
+                    if (p.type === 'P') {
+                        key += `H${p.hasMoved ? 1 : 0}`;
+                    }
+                    key += ';';
+                }
+            }
+        }
+        key += '|W_RES:';
+        for (const p of this.whiteReserve) {
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
+        }
+        key += '|B_RES:';
+        for (const p of this.blackReserve) {
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
+        }
+        key += '|DELAY:';
+        for (const d of this.delayedSpawns) {
+            key += `${d.player}:${d.piece.type}${d.piece.suit || 'X'}${d.piece.squareColor || ''};`;
+        }
+        return key;
+    }
+
+    /**
+     * Records the current position in the threefold repetition history and
+     * returns its key. Used after a suit reset, because the resulting position
+     * is new and its first appearance must be counted.
+     */
+    recordCurrentPosition() {
+        const key = this.getPositionKey();
+        this.positionHistory[key] = (this.positionHistory[key] || 0) + 1;
+        return key;
+    }
+
+    /**
+     * Undo last executed move and restore previous board state
+     */
+    undoMove() {
+        if (!this.snapshots || this.snapshots.length === 0) {
+            return false;
+        }
+        const prev = this.snapshots.pop();
+        this.board = prev.board;
+        this.turn = prev.turn;
+        this.deck = prev.deck ? [...prev.deck] : [];
+        this.whiteReserve = prev.whiteReserve ? prev.whiteReserve.map(p => ({ ...p })) : [];
+        this.blackReserve = prev.blackReserve ? prev.blackReserve.map(p => ({ ...p })) : [];
+        this.capturedWhite = prev.capturedWhite ? prev.capturedWhite.map(p => ({ ...p })) : [];
+        this.capturedBlack = prev.capturedBlack ? prev.capturedBlack.map(p => ({ ...p })) : [];
+        this.moveHistory = prev.moveHistory;
+        this.status = prev.status;
+        this.winner = prev.winner;
+        this.drawReason = prev.drawReason ?? null;
+        this.lastMove = prev.lastMove;
+        this.spawnEvents = [];
+        this.delayedSpawns = prev.delayedSpawns ? prev.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })) : [];
+        this.positionHistory = prev.positionHistory ? { ...prev.positionHistory } : {};
+        this.suitsResolved = !!prev.suitsResolved;
+        this.suitsReset = !!prev.suitsReset;
+        this.pendingSuitOffer = !!prev.pendingSuitOffer;
+        this.rng = prev.rng && typeof prev.rng.clone === 'function'
+            ? prev.rng.clone()
+            : prev.rng;
+        return true;
+    }
+
+    /**
+     * Execute a move from (fromR, fromC) to (toR, toC)
+     * Optional promotionChoice: { type: 'Q'|'R'|'B'|'N', suit: 'spades'|'clubs'|'hearts'|'diamonds' }
+     * After engine.suitsReset the suit is omitted (or null) and the piece stays suitless.
+     * Returns result object with move details
+     */
+    makeMove(fromR, fromC, toR, toC, promotionChoice = null) {
+        if (this.pendingSuitOffer) {
+            return { success: false, reason: 'Pending suit offer' };
+        }
+        if (this.isGameOver()) {
+            return { success: false, reason: 'Game over' };
+        }
+
+        const piece = this.board.getPiece(fromR, fromC);
+        if (!piece || piece.color !== this.turn) {
+            return { success: false, reason: 'Not your turn or no piece' };
+        }
+
+        const legalMoves = GameRules.getLegalMoves(this.board, fromR, fromC);
+        const isValid = legalMoves.some(m => m.r === toR && m.c === toC);
+        if (!isValid) {
+            return { success: false, reason: 'Illegal move' };
+        }
+
+        // Remember whether any spawn queue (reserves / delayed appearance)
+        // existed before the move: emptying queues is an offer trigger.
+        const hadSpawnQueue = this.whiteReserve.length > 0 ||
+            this.blackReserve.length > 0 ||
+            this.delayedSpawns.length > 0;
+
+        // Save state snapshot before mutating. Pieces are shallow-copied because
+        // every piece field is a primitive, but lists and the board must be
+        // independent so that undo restores suits exactly.
+        this.snapshots.push({
+            board: this.board.clone(),
+            turn: this.turn,
+            deck: [...this.deck],
+            whiteReserve: this.whiteReserve.map(p => ({ ...p })),
+            blackReserve: this.blackReserve.map(p => ({ ...p })),
+            capturedWhite: this.capturedWhite.map(p => ({ ...p })),
+            capturedBlack: this.capturedBlack.map(p => ({ ...p })),
+            moveHistory: [...this.moveHistory],
+            status: this.status,
+            winner: this.winner,
+            drawReason: this.drawReason,
+            lastMove: this.lastMove ? { ...this.lastMove } : null,
+            delayedSpawns: this.delayedSpawns.map(d => ({ piece: { ...d.piece }, player: d.player })),
+            positionHistory: { ...this.positionHistory },
+            suitsResolved: this.suitsResolved,
+            suitsReset: this.suitsReset,
+            pendingSuitOffer: this.pendingSuitOffer,
+            rng: this.rng && typeof this.rng.clone === 'function' ? this.rng.clone() : this.rng
+        });
+
+        // Apply the complete move once. History, notation, the suit-draw offer
+        // and threefold repetition are added by this wrapper on top of it.
+        const core = this.applyMoveCore(fromR, fromC, toR, toC, promotionChoice);
+        const capturedPiece = core.capturedPiece;
+        const isPromotion = core.isPromotion;
+
+        const moveNotation = this.formatNotation(
+            core.movingPieceType, core.movingPieceSuit, core.movingPiece,
+            fromR, fromC, toR, toC, capturedPiece, isPromotion,
+            core.opponentInCheck,
+            core.opponentMoves.length === 0 && core.opponentInCheck
+        );
+
+        this.lastMove = {
+            from: { r: fromR, c: fromC },
+            to: { r: toR, c: toC },
+            piece: core.movingPiece,
+            captured: capturedPiece,
+            notation: moveNotation,
+            spawnEvents: [...core.spawnEvents]
+        };
+
+        this.moveHistory.push(this.lastMove);
+
+        // 8. Empty-bank suit offer: evaluated once per move, after captures, reserve
+        //    deployment and delayed spawns are fully processed, and after the
+        //    mate/stalemate status is known. While the offer is pending, threefold
+        //    repetition is intentionally not processed for this move.
+        const suitDrawOffer = this.shouldOfferSuitDraw({
+            hadCapture: !!capturedPiece,
+            hadPromotion: isPromotion,
+            hadSpawnQueue
+        });
+
+        if (suitDrawOffer) {
+            this.pendingSuitOffer = true;
+            return {
+                success: true,
+                lastMove: this.lastMove,
+                status: this.status,
+                winner: this.winner,
+                threefold: false,
+                suitDrawOffer: true,
+                positionKey: this.getPositionKey()
+            };
+        }
+
+        // 9. Check Threefold Repetition
+        const currentPosKey = this.getPositionKey();
+        this.positionHistory[currentPosKey] = (this.positionHistory[currentPosKey] || 0) + 1;
+        const isThreefold = this.positionHistory[currentPosKey] >= 3;
+
+        return {
+            success: true,
+            lastMove: this.lastMove,
+            status: this.status,
+            winner: this.winner,
+            threefold: isThreefold,
+            suitDrawOffer: false,
+            positionKey: currentPosKey
+        };
+    }
+
+    /**
+     * Collects the sets of suits still present on each side's board pieces.
+     * Kings and suitless pieces are ignored: only real suited pieces count.
+     */
+    getBoardSuitSets() {
+        const white = new Set();
+        const black = new Set();
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = this.board.getPiece(r, c);
+                if (!p || !p.suit || p.type === 'K') continue;
+                (p.color === 'white' ? white : black).add(p.suit);
+            }
+        }
+        return { white, black };
+    }
+
+    /**
+     * True when the "empty bank + different suits" draw should be offered.
+     * All conditions must hold:
+     * - the bank (deck) is empty, both reserves and the delayed queue are empty;
+     * - both sides still have at least one suited board piece and their suit sets
+     *   do not intersect;
+     * - the offer was not resolved earlier this game;
+     * - the move did not finish the game by mate or stalemate;
+     * - this move captured, promoted, or emptied the spawn queues.
+     */
+    shouldOfferSuitDraw({ hadCapture = false, hadPromotion = false, hadSpawnQueue = false } = {}) {
+        if (this.suitsResolved || this.pendingSuitOffer) return false;
+        if (!hadCapture && !hadPromotion && !hadSpawnQueue) return false;
+        if (this.deck.length !== 0) return false;
+        if (this.whiteReserve.length > 0 || this.blackReserve.length > 0 || this.delayedSpawns.length > 0) {
+            return false;
+        }
+        if (this.status === 'checkmate' || this.status === 'stalemate') return false;
+
+        const { white, black } = this.getBoardSuitSets();
+        if (white.size === 0 || black.size === 0) return false;
+        for (const suit of white) {
+            if (black.has(suit)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Removes suits from every piece that is still in play (board, reserves and the
+     * delayed queue). Captured pieces keep the suit they were captured with, and
+     * bishop square colours are never touched.
+     */
+    resetSuits() {
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = this.board.getPiece(r, c);
+                if (piece) piece.suit = null;
+            }
+        }
+        for (const piece of this.whiteReserve) piece.suit = null;
+        for (const piece of this.blackReserve) piece.suit = null;
+        for (const delayed of this.delayedSpawns) delayed.piece.suit = null;
+        this.suitsReset = true;
+    }
+
+
     formatNotation(originalType, originalSuit, currentPiece, fromR, fromC, toR, toC, captured, isPromotion, isCheck, isCheckmate) {
         const fromNot = Board.toNotation(fromR, fromC);
         const toNot = Board.toNotation(toR, toC);
@@ -1894,24 +2183,34 @@ class GameEngine {
 
 /**
  * Chess Durak - Intelligent AI Engine
+ *
+ * Medium and hard search the complete game state (board, bank, reserves,
+ * delayed spawns, captures, suit-reset flag and status) by cloning a
+ * GameState and applying real moves through applyMoveCore().
  */
-// A captured piece is replaced from the bank, so a capture is worth only
-// about 70% of the victim's nominal value in the search.
-const CAPTURE_REPLACEMENT_FACTOR = 0.7;
+const MATE = 100000;
+const RESERVE_WEIGHT = 0.9;
+const DELAYED_WEIGHT = 0.9;
 class ChessDurakAI {
     constructor(engine) {
         this.engine = engine;
+        this.searchDeadline = 0;
+        this._nodes = 0;
+        this.searchAborted = false;
     }
 
     /**
-     * Choose the best move for the AI color
+     * Choose the best move for the AI color.
      */
     async findBestMove(color, difficulty = 'medium') {
-        const legalMoves = GameRules.getAllLegalMoves(this.engine.board, color);
+        const root = this.engine.cloneState();
+        const legalMoves = GameRules.getAllLegalMoves(root.board, color);
         if (legalMoves.length === 0) return null;
 
+        const opponentColor = color === 'white' ? 'black' : 'white';
+
         if (difficulty === 'easy') {
-            // Easy: prioritize captures, otherwise random
+            // Easy: prioritize captures, otherwise random. No search.
             const captures = legalMoves.filter(m => m.isCapture);
             let chosenMove = null;
             if (captures.length > 0 && Math.random() < 0.7) {
@@ -1919,84 +2218,114 @@ class ChessDurakAI {
             } else {
                 chosenMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
             }
-            if (chosenMove && chosenMove.piece.type === 'P' && (chosenMove.to.r === 0 || chosenMove.to.r === 7)) {
-                const opponentColor = color === 'white' ? 'black' : 'white';
-                chosenMove.promotionChoice = {
-                    type: 'Q',
-                    suit: this.getBestPromotionSuit(this.engine.board, opponentColor)
-                };
+            if (chosenMove) {
+                chosenMove.promotionChoice = this.getPromotionChoice(this.engine, chosenMove, color);
             }
             return chosenMove;
         }
 
         const isHard = (difficulty === 'hard');
-        const depth = isHard ? 3 : 2;
+        const maxDepth = isHard ? 3 : 2;
         const timeLimitMs = isHard ? 1500 : 800;
-        const startTime = Date.now();
+        const deadline = Date.now() + timeLimitMs;
+        this.searchDeadline = deadline;
+        this._nodes = 0;
 
-        // Order moves so alpha-beta cuts off subtrees effectively
-        const orderedMoves = this.orderMoves(this.engine.board, legalMoves, color, isHard);
+        // Ordering is computed once per root call; it uses Math.random() only
+        // for medium noise and never consumes the state RNG.
+        const orderedMoves = this.orderMoves(root, legalMoves, color, isHard);
 
         let bestMove = null;
-        let bestScore = -Infinity;
-        const opponentColor = color === 'white' ? 'black' : 'white';
 
-        for (let i = 0; i < orderedMoves.length; i++) {
-            const move = orderedMoves[i];
+        // Iterative deepening: only a fully completed depth may replace the
+        // best move. A depth that ran out of time inside minimax is discarded,
+        // so the result of the last fully completed depth remains selected.
+        for (let depth = 1; depth <= maxDepth; depth++) {
+            if (Date.now() >= deadline) break;
 
-            // If time limit reached and at least one root move was evaluated, stop search
-            if (i > 0 && (Date.now() - startTime) >= timeLimitMs) {
-                break;
+            this.searchAborted = false;
+            let iterationBest = null;
+            let iterationScore = -Infinity;
+            let completed = true;
+            const scoreByMove = new Map();
+
+            for (const move of orderedMoves) {
+                // The deadline may pass between root moves; an incomplete
+                // iteration can never be accepted.
+                if (Date.now() >= deadline) {
+                    completed = false;
+                    break;
+                }
+
+                await new Promise(r => setTimeout(r, 0));
+
+                const state = root.cloneState();
+                const promotionChoice = this.getPromotionChoice(state, move, color);
+                state.applyMoveCore(
+                    move.from.r, move.from.c,
+                    move.to.r, move.to.c,
+                    promotionChoice
+                );
+
+                let score;
+                if (state.status === 'checkmate') {
+                    score = state.winner === color ? MATE : -MATE;
+                } else if (state.status === 'stalemate') {
+                    score = 0;
+                } else {
+                    // Root is maximizing: the best score so far is a valid
+                    // alpha bound for the remaining moves.
+                    score = this.minimax(
+                        state, depth - 1, iterationScore, Infinity,
+                        color, state.turn, isHard, 1
+                    );
+                }
+
+                // minimax() reports an aborted search through searchAborted:
+                // the partial score is meaningless and must not be recorded.
+                if (this.searchAborted) {
+                    completed = false;
+                    break;
+                }
+
+                scoreByMove.set(move, score);
+                if (iterationBest === null || score > iterationScore) {
+                    iterationScore = score;
+                    iterationBest = move;
+                }
             }
 
-            // Yield execution to keep UI responsive
-            await new Promise(r => setTimeout(r, 0));
+            if (iterationBest && completed && !this.searchAborted) {
+                bestMove = iterationBest;
 
-            // Simulate move
-            const simBoard = this.engine.board.clone();
-            const movingPiece = simBoard.getPiece(move.from.r, move.from.c);
-            if (!movingPiece) continue; // Stale move (board changed while searching)
-
-            const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
-
-            simBoard.removePiece(move.to.r, move.to.c);
-            simBoard.removePiece(move.from.r, move.from.c);
-            simBoard.setPiece(move.to.r, move.to.c, movingPiece);
-            movingPiece.hasMoved = true;
-
-            // Handle promotion in sim: queen, with the same suit choice as the real move
-            if (movingPiece.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
-                this.applySimulatedPromotion(movingPiece, simBoard, opponentColor);
+                // Search the most promising root moves first at the next depth.
+                orderedMoves.sort(
+                    (a, b) => scoreByMove.get(b) - scoreByMove.get(a)
+                );
             }
-
-            // The victim is replaced from the bank, so only 70% of its value counts
-            const materialAdjustment = this.captureAdjustment(capturedPiece, true);
-
-            // Root alpha cutoff: pass alpha = bestScore
-            const score = this.minimax(simBoard, depth - 1, bestScore, Infinity, false, color, opponentColor, isHard, materialAdjustment);
-
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove = move;
-            }
+            if (!completed || this.searchAborted || Date.now() >= deadline) break;
         }
 
         const finalMove = bestMove || orderedMoves[0] || legalMoves[0];
-
-        if (finalMove && finalMove.piece && finalMove.piece.type === 'P' && (finalMove.to.r === 0 || finalMove.to.r === 7)) {
-            finalMove.promotionChoice = {
-                type: 'Q',
-                suit: this.getBestPromotionSuit(this.engine.board, opponentColor)
-            };
+        if (finalMove) {
+            const promotionChoice = this.getPromotionChoice(this.engine, finalMove, color);
+            if (promotionChoice) finalMove.promotionChoice = promotionChoice;
         }
 
         return finalMove;
     }
 
     /**
-     * Orders moves with MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+     * Orders moves with MVV-LVA. Uses only the board and the average bank
+     * value; it never clones the full state and never consumes state.rng.
      */
-    orderMoves(board, moves, color, isHard) {
+    orderMoves(state, moves, color, isHard) {
+        const board = state.board;
+        const oppColor = color === 'white' ? 'black' : 'white';
+        const avgBank = state.deck.length
+            ? state.deck.reduce((sum, c) => sum + (PIECE_VALUES[c.type] || 0), 0) / state.deck.length
+            : 0;
+
         const scoredMoves = moves.map(m => {
             let priority = 0;
             const attacker = board.getPiece(m.from.r, m.from.c);
@@ -2005,18 +2334,18 @@ class ChessDurakAI {
             if (m.isCapture && target) {
                 const victimVal = PIECE_VALUES[target.type] || 100;
                 const attackerVal = attacker ? (PIECE_VALUES[attacker.type] || 100) : 100;
-                // Favor capturing valuable pieces with lower value pieces
-                priority += 1000 + (victimVal - attackerVal * 0.1);
+                // The victim is replaced from the bank, so the net gain is
+                // reduced by the average replacement value.
+                priority += 1000 + (victimVal - avgBank) - attackerVal * 0.1;
             }
 
-            // Checks priority
+            // Checks priority (board-only simulation, used for ordering only)
             const simBoard = board.clone();
             const p = simBoard.getPiece(m.from.r, m.from.c);
             simBoard.removePiece(m.to.r, m.to.c);
             simBoard.removePiece(m.from.r, m.from.c);
             simBoard.setPiece(m.to.r, m.to.c, p);
             if (p) p.hasMoved = true;
-            const oppColor = color === 'white' ? 'black' : 'white';
             if (GameRules.isKingInCheck(simBoard, oppColor)) {
                 priority += 300;
             }
@@ -2026,7 +2355,7 @@ class ChessDurakAI {
                 priority += rankProgress * 15;
             }
 
-            // Add tiny random noise only in medium mode to vary play
+            // Tiny random noise only in medium mode to vary play.
             if (!isHard) {
                 priority += Math.random() * 20;
             }
@@ -2038,13 +2367,16 @@ class ChessDurakAI {
         return scoredMoves.map(sm => sm.move);
     }
 
-    getBestPromotionSuit(board, opponentColor) {
-        // After the suit reset no piece has a suit, so a promoted piece stays suitless.
-        if (this.engine.suitsReset) return null;
+    /**
+     * Picks the promotion suit: the one the opponent currently has the most
+     * material in. After a suit reset the promoted piece stays suitless.
+     */
+    getBestPromotionSuit(state, opponentColor) {
+        if (state.suitsReset) return null;
         const suitScores = { spades: 10, clubs: 10, hearts: 10, diamonds: 10 };
         for (let r = 0; r < 8; r++) {
             for (let c = 0; c < 8; c++) {
-                const piece = board.getPiece(r, c);
+                const piece = state.board.getPiece(r, c);
                 if (piece && piece.color === opponentColor && piece.suit) {
                     suitScores[piece.suit] += PIECE_VALUES[piece.type] || 100;
                 }
@@ -2062,89 +2394,150 @@ class ChessDurakAI {
     }
 
     /**
-     * Material correction for a capture, from myColor's point of view.
-     * myColor gains 0.7 * victim; the opponent gains 0.7 * victim on its own captures.
+     * Returns { type: 'Q', suit } when the move promotes a pawn, otherwise null.
      */
-    captureAdjustment(capturedPiece, isMaximizing) {
-        if (!capturedPiece) return 0;
-        const replacementLoss = (1 - CAPTURE_REPLACEMENT_FACTOR) * (PIECE_VALUES[capturedPiece.type] || 0);
-        return isMaximizing ? -replacementLoss : replacementLoss;
+    getPromotionChoice(state, move, color) {
+        const piece = state.board.getPiece(move.from.r, move.from.c);
+        if (!piece || piece.type !== 'P') return null;
+        const promoRank = color === 'white' ? 0 : 7;
+        if (move.to.r !== promoRank) return null;
+        return {
+            type: 'Q',
+            suit: this.getBestPromotionSuit(state, color === 'white' ? 'black' : 'white')
+        };
     }
 
-    /**
-     * Simulation-only promotion: always a queen, but with the same suit choice
-     * the real move would make (getBestPromotionSuit).
-     */
-    applySimulatedPromotion(piece, board, promoOpponentColor) {
-        piece.type = 'Q';
-        piece.suit = this.getBestPromotionSuit(board, promoOpponentColor);
-        piece.squareColor = null;
+    timeUp() {
+        if (!this.searchDeadline) return false;
+        if (this.searchAborted) return true;
+        this._nodes++;
+        if ((this._nodes & 127) !== 0) return false;
+        if (Date.now() >= this.searchDeadline) {
+            this.searchAborted = true;
+            return true;
+        }
+        return false;
     }
 
-    minimax(board, depth, alpha, beta, isMaximizing, myColor, opponentColor, isHard, materialAdjustment = 0) {
-        const myKingInCheck = GameRules.isKingInCheck(board, myColor);
-        const oppKingInCheck = GameRules.isKingInCheck(board, opponentColor);
-
-        const currentTurnColor = isMaximizing ? myColor : opponentColor;
-        const legalMoves = GameRules.getAllLegalMoves(board, currentTurnColor);
+    minimax(state, depth, alpha, beta, myColor, opponentColor, isHard, ply) {
+        const currentColor = state.turn;
+        const isMaximizing = currentColor === myColor;
+        const legalMoves = GameRules.getAllLegalMoves(state.board, currentColor);
 
         if (legalMoves.length === 0) {
-            if (isMaximizing && myKingInCheck) return -99999 + (4 - depth); // Checkmated
-            if (!isMaximizing && oppKingInCheck) return 99999 - (4 - depth); // Won
-            return 0; // Stalemate
+            if (state.status === 'checkmate') {
+                return state.winner === myColor
+                    ? MATE - ply
+                    : -MATE + ply;
+            }
+            if (state.status === 'stalemate') return 0;
+            // Safety for manually assembled states
+            return GameRules.isKingInCheck(state.board, currentColor)
+                ? (isMaximizing ? -MATE + ply : MATE - ply)
+                : 0;
         }
 
-        if (depth === 0) {
-            return this.evaluateBoard(board, myColor, opponentColor, isHard) + materialAdjustment;
+        if (depth === 0 || this.timeUp()) {
+            return this.evaluateState(state, myColor, opponentColor, isHard);
         }
 
-        const orderedMoves = isHard ? this.orderMoves(board, legalMoves, currentTurnColor, true) : legalMoves;
+        const orderedMoves = isHard
+            ? this.orderMoves(state, legalMoves, currentColor, true)
+            : legalMoves;
 
         if (isMaximizing) {
             let maxEval = -Infinity;
             for (const move of orderedMoves) {
-                const simBoard = board.clone();
-                const p = simBoard.getPiece(move.from.r, move.from.c);
-                if (!p) continue;
-                const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
-                simBoard.removePiece(move.to.r, move.to.c);
-                simBoard.removePiece(move.from.r, move.from.c);
-                simBoard.setPiece(move.to.r, move.to.c, p);
-                p.hasMoved = true;
-                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
-                    this.applySimulatedPromotion(p, simBoard, opponentColor);
+                if (this.timeUp()) {
+                    return this.evaluateState(state, myColor, opponentColor, isHard);
                 }
-                const nextAdjustment = materialAdjustment + this.captureAdjustment(capturedPiece, true);
 
-                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, false, myColor, opponentColor, isHard, nextAdjustment);
+                const next = state.cloneState();
+                const promotionChoice = this.getPromotionChoice(next, move, currentColor);
+                next.applyMoveCore(
+                    move.from.r, move.from.c,
+                    move.to.r, move.to.c,
+                    promotionChoice
+                );
+
+                let evaluation;
+                if (next.status === 'checkmate') {
+                    evaluation = next.winner === myColor ? MATE - (ply + 1) : -MATE + (ply + 1);
+                } else if (next.status === 'stalemate') {
+                    evaluation = 0;
+                } else {
+                    evaluation = this.minimax(
+                        next, depth - 1, alpha, beta,
+                        myColor, opponentColor, isHard, ply + 1
+                    );
+                }
+
                 maxEval = Math.max(maxEval, evaluation);
                 alpha = Math.max(alpha, evaluation);
                 if (beta <= alpha) break;
             }
             return maxEval;
-        } else {
-            let minEval = Infinity;
-            for (const move of orderedMoves) {
-                const simBoard = board.clone();
-                const p = simBoard.getPiece(move.from.r, move.from.c);
-                if (!p) continue;
-                const capturedPiece = simBoard.getPiece(move.to.r, move.to.c);
-                simBoard.removePiece(move.to.r, move.to.c);
-                simBoard.removePiece(move.from.r, move.from.c);
-                simBoard.setPiece(move.to.r, move.to.c, p);
-                p.hasMoved = true;
-                if (p.type === 'P' && (move.to.r === 0 || move.to.r === 7)) {
-                    this.applySimulatedPromotion(p, simBoard, myColor);
-                }
-                const nextAdjustment = materialAdjustment + this.captureAdjustment(capturedPiece, false);
-
-                const evaluation = this.minimax(simBoard, depth - 1, alpha, beta, true, myColor, opponentColor, isHard, nextAdjustment);
-                minEval = Math.min(minEval, evaluation);
-                beta = Math.min(beta, evaluation);
-                if (beta <= alpha) break;
-            }
-            return minEval;
         }
+
+        let minEval = Infinity;
+        for (const move of orderedMoves) {
+            if (this.timeUp()) {
+                return this.evaluateState(state, myColor, opponentColor, isHard);
+            }
+
+            const next = state.cloneState();
+            const promotionChoice = this.getPromotionChoice(next, move, currentColor);
+            next.applyMoveCore(
+                move.from.r, move.from.c,
+                move.to.r, move.to.c,
+                promotionChoice
+            );
+
+            let evaluation;
+            if (next.status === 'checkmate') {
+                evaluation = next.winner === myColor ? MATE - (ply + 1) : -MATE + (ply + 1);
+            } else if (next.status === 'stalemate') {
+                evaluation = 0;
+            } else {
+                evaluation = this.minimax(
+                    next, depth - 1, alpha, beta,
+                    myColor, opponentColor, isHard, ply + 1
+                );
+            }
+
+            minEval = Math.min(minEval, evaluation);
+            beta = Math.min(beta, evaluation);
+            if (beta <= alpha) break;
+        }
+        return minEval;
+    }
+
+    /**
+     * Full-state evaluation: board heuristic plus reserves and delayed spawns.
+     * The bank itself is neutral (it serves both sides); its effect is already
+     * modelled by the real capture simulation.
+     */
+    evaluateState(state, myColor, opponentColor, isHard) {
+        let score = this.evaluateBoard(state.board, myColor, opponentColor, isHard);
+
+        const sign = myColor === 'white' ? 1 : -1;
+        const reserveValue = list => list.reduce(
+            (sum, p) => sum + (PIECE_VALUES[p.type] || 0), 0
+        );
+
+        score += sign * RESERVE_WEIGHT * (
+            reserveValue(state.whiteReserve) - reserveValue(state.blackReserve)
+        );
+
+        const delayedValue = player => state.delayedSpawns
+            .filter(d => d.player === player)
+            .reduce((sum, d) => sum + (PIECE_VALUES[d.piece.type] || 0), 0);
+
+        score += sign * DELAYED_WEIGHT * (
+            delayedValue('white') - delayedValue('black')
+        );
+
+        return score;
     }
 
     /**
@@ -2329,6 +2722,9 @@ class ChessDurakApp {
             customSummaryTotal: document.getElementById('customSummaryTotal'),
             customSummaryBank: document.getElementById('customSummaryBank'),
             customSummaryUnused: document.getElementById('customSummaryUnused'),
+            customSummaryTopUpRow: document.getElementById('customSummaryTopUpRow'),
+            customSummaryTopUp: document.getElementById('customSummaryTopUp'),
+            customTopUpHint: document.getElementById('customTopUpHint'),
             customSettingsError: document.getElementById('customSettingsError'),
 
             // AI Settings Modal
@@ -2729,12 +3125,23 @@ class ChessDurakApp {
         slider.value = String(bankSize);
 
         const unused = Math.max(0, total - 2 * STARTING_HAND_SIZE - bankSize);
+        const shortfall = getStartingDealShortfall(config);
 
         this.dom.customBankValue.textContent = String(bankSize);
         this.dom.customBankMaxLabel.textContent = String(maxBank);
         this.dom.customSummaryTotal.textContent = String(total);
         this.dom.customSummaryBank.textContent = String(bankSize);
         this.dom.customSummaryUnused.textContent = String(unused);
+
+        if (this.dom.customSummaryTopUpRow) {
+            this.dom.customSummaryTopUpRow.style.display = shortfall > 0 ? '' : 'none';
+        }
+        if (this.dom.customSummaryTopUp) {
+            this.dom.customSummaryTopUp.textContent = String(shortfall);
+        }
+        if (this.dom.customTopUpHint) {
+            this.dom.customTopUpHint.style.display = shortfall > 0 ? '' : 'none';
+        }
 
         // A previous error no longer applies after the user edits the form.
         if (this.dom.customSettingsError.textContent) {
