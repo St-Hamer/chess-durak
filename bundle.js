@@ -2638,6 +2638,19 @@ class ChessDurakApp {
         this.aiSelectedSide = 'white'; // 'white' | 'black' | 'random'
         this.aiSelectedDiff = 'medium';// 'easy' | 'medium' | 'hard'
         this.customGameConfig = null;  // Last successfully started custom configuration
+
+        // Custom opponent: committed state of the current game
+        this.customOpponent = 'human';        // 'human' | 'ai'
+        this.customAiSide = 'white';          // 'white' | 'black'
+        this.customAiDifficulty = 'medium';   // 'easy' | 'medium' | 'hard'
+
+        // Custom opponent: draft shown in the settings modal
+        this.customOpponentDraft = 'human';
+
+        // AI settings modal context
+        this.aiModalContext = 'standard';     // 'standard' | 'custom'
+        this.aiModalReturnToCustom = false;   // opened from the custom settings modal
+
         this.isFlipped = false;
         this.selectedSquare = null;    // { r, c }
         this.legalMoves = [];          // array of { r, c, isCapture }
@@ -2726,13 +2739,14 @@ class ChessDurakApp {
             customSummaryTopUp: document.getElementById('customSummaryTopUp'),
             customTopUpHint: document.getElementById('customTopUpHint'),
             customSettingsError: document.getElementById('customSettingsError'),
+            customOpponentBtns: document.querySelectorAll('.custom-opponent-btn'),
 
             // AI Settings Modal
             aiSettingsModal: document.getElementById('aiSettingsModal'),
             closeAiSettingsBtn: document.getElementById('closeAiSettingsBtn'),
             cancelAiSettingsBtn: document.getElementById('cancelAiSettingsBtn'),
             startAiGameBtn: document.getElementById('startAiGameBtn'),
-            sideOptionBtns: document.querySelectorAll('.side-option-btn'),
+            sideOptionBtns: document.querySelectorAll('.side-option-btn[data-side]'),
             diffOptionBtns: document.querySelectorAll('.diff-option-btn'),
 
             // Tutorial Card & Modal
@@ -2913,64 +2927,57 @@ class ChessDurakApp {
 
         // Mode Switching: AI
         this.dom.modeAiBtn.addEventListener('click', () => {
-            this.dom.aiSettingsModal.classList.add('open');
+            this.openAiSettings('standard');
         });
         this.dom.changeAiSettingsBtn.addEventListener('click', () => {
-            this.dom.aiSettingsModal.classList.add('open');
+            const context = this.isCustomAiGame() ? 'custom' : 'standard';
+            this.openAiSettings(context);
         });
         this.dom.closeAiSettingsBtn.addEventListener('click', () => {
-            this.dom.aiSettingsModal.classList.remove('open');
+            this.closeAiSettings();
         });
         this.dom.cancelAiSettingsBtn.addEventListener('click', () => {
-            this.dom.aiSettingsModal.classList.remove('open');
+            this.closeAiSettings();
+        });
+
+        // Custom opponent selection («Своя игра»)
+        this.dom.customOpponentBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const choice = btn.dataset.opponent;
+                if (choice !== 'human' && choice !== 'ai') return;
+
+                this.customOpponentDraft = choice;
+                this.refreshCustomOpponentButtons();
+
+                if (choice === 'ai') {
+                    this.openAiSettings('custom', { returnToCustom: true });
+                }
+            });
         });
 
         // AI Side Selection
         this.dom.sideOptionBtns.forEach(btn => {
             btn.addEventListener('click', (e) => {
-                this.dom.sideOptionBtns.forEach(b => b.classList.remove('active'));
-                const target = e.currentTarget;
-                target.classList.add('active');
-                this.aiSelectedSide = target.dataset.side;
+                this.aiSelectedSide = e.currentTarget.dataset.side;
+                this.refreshAiSelectionButtons();
             });
         });
 
         // AI Difficulty Selection
         this.dom.diffOptionBtns.forEach(btn => {
             btn.addEventListener('click', (e) => {
-                this.dom.diffOptionBtns.forEach(b => b.classList.remove('active'));
-                const target = e.currentTarget;
-                target.classList.add('active');
-                this.aiSelectedDiff = target.dataset.diff;
+                this.aiSelectedDiff = e.currentTarget.dataset.diff;
+                this.refreshAiSelectionButtons();
             });
         });
 
         // Start AI Game Button
         this.dom.startAiGameBtn.addEventListener('click', () => {
-            this.dom.aiSettingsModal.classList.remove('open');
-            this.setActiveModeBtn(this.dom.modeAiBtn);
-            this.difficulty = this.aiSelectedDiff;
-
-            let chosenSide = this.aiSelectedSide;
-            if (chosenSide === 'random') {
-                chosenSide = Math.random() < 0.5 ? 'white' : 'black';
-            }
-
-            if (chosenSide === 'white') {
-                this.gameMode = 'ai-white';
-                this.isFlipped = false;
+            if (this.aiModalContext === 'custom') {
+                this.startCustomAiGame();
             } else {
-                this.gameMode = 'ai-black';
-                this.isFlipped = true;
+                this.startStandardAiGame();
             }
-
-            const diffNames = { easy: 'Новичок', medium: 'Гроссмейстер', hard: 'Аналитик' };
-            const sideName = chosenSide === 'white' ? 'Белые' : 'Чёрные';
-            this.dom.aiStatusTag.textContent = `🤖 ИИ: ${diffNames[this.difficulty]} (вы: ${sideName})`;
-            this.dom.aiActiveStatus.style.display = 'flex';
-            this.dom.tutorialCard.style.display = 'none';
-
-            this.startNewGame();
         });
 
         // Mode Switching: Tutorial Mode
@@ -3062,11 +3069,202 @@ class ChessDurakApp {
         if (activeBtn) activeBtn.classList.add('active');
     }
 
+    isCustomAiGame() {
+        return this.gameMode === 'custom' && this.customOpponent === 'ai';
+    }
+
+    /**
+     * Returns the color played by the computer, or null in human-only modes.
+     * `customAiSide` is the human player's side, so the AI takes the opposite.
+     */
+    getAiSide() {
+        if (this.gameMode === 'ai-white') return 'black';
+        if (this.gameMode === 'ai-black') return 'white';
+        if (this.gameMode === 'tutorial') return 'black';
+        if (this.isCustomAiGame()) {
+            return this.customAiSide === 'white' ? 'black' : 'white';
+        }
+        return null;
+    }
+
+    refreshCustomOpponentButtons() {
+        this.dom.customOpponentBtns.forEach(btn => {
+            btn.classList.toggle(
+                'active',
+                btn.dataset.opponent === this.customOpponentDraft
+            );
+        });
+    }
+
+    refreshAiSelectionButtons() {
+        this.dom.sideOptionBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.side === this.aiSelectedSide);
+        });
+        this.dom.diffOptionBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.diff === this.aiSelectedDiff);
+        });
+    }
+
+    getDifficultyLabel(diff = this.difficulty) {
+        const names = {
+            easy: 'Новичок',
+            medium: 'Гроссмейстер',
+            hard: 'Аналитик'
+        };
+        return names[diff] || names.medium;
+    }
+
+    updateCustomAiStatusTag() {
+        if (!this.isCustomAiGame()) return;
+        const sideName = this.customAiSide === 'white' ? 'Белые' : 'Чёрные';
+        this.dom.aiStatusTag.textContent =
+            `🤖 ИИ: ${this.getDifficultyLabel(this.customAiDifficulty)} (вы: ${sideName})`;
+    }
+
+    openAiSettings(context = 'standard', options = {}) {
+        this.aiModalContext = context;
+        this.aiModalReturnToCustom = Boolean(options.returnToCustom);
+
+        if (context === 'custom') {
+            // Keep the custom settings window open behind the AI settings.
+            // Only this layered case needs the raised overlay; opening the
+            // AI settings from the HUD uses the normal modal style.
+            if (this.aiModalReturnToCustom) {
+                this.dom.aiSettingsModal.classList.add('modal-stacked');
+                this.dom.customSettingsModal.classList.add('modal-behind');
+            } else {
+                this.dom.aiSettingsModal.classList.remove('modal-stacked');
+                this.dom.customSettingsModal.classList.remove('modal-behind');
+            }
+
+            // Show the settings of the active custom AI game, if any.
+            if (this.isCustomAiGame()) {
+                this.aiSelectedSide = this.customAiSide;
+                this.aiSelectedDiff = this.customAiDifficulty;
+            }
+        } else {
+            this.dom.aiSettingsModal.classList.remove('modal-stacked');
+            this.dom.customSettingsModal.classList.remove('modal-behind');
+        }
+
+        this.refreshAiSelectionButtons();
+        this.dom.aiSettingsModal.classList.add('open');
+    }
+
+    closeAiSettings() {
+        this.dom.aiSettingsModal.classList.remove('open');
+        this.dom.aiSettingsModal.classList.remove('modal-stacked');
+        this.dom.customSettingsModal.classList.remove('modal-behind');
+
+        const returnToCustom = this.aiModalContext === 'custom' &&
+            this.aiModalReturnToCustom;
+
+        this.aiModalContext = 'standard';
+        this.aiModalReturnToCustom = false;
+
+        if (returnToCustom) {
+            // Cancelling the AI settings discards the AI choice but keeps the
+            // custom configuration draft untouched. The custom modal stayed
+            // open the whole time; make sure it is still visible.
+            this.customOpponentDraft = 'human';
+            this.refreshCustomOpponentButtons();
+            this.dom.customSettingsModal.classList.add('open');
+        }
+    }
+
+    startStandardAiGame() {
+        this.dom.aiSettingsModal.classList.remove('open');
+        this.dom.aiSettingsModal.classList.remove('modal-stacked');
+        this.dom.customSettingsModal.classList.remove('modal-behind');
+        this.aiModalContext = 'standard';
+        this.aiModalReturnToCustom = false;
+        this.setActiveModeBtn(this.dom.modeAiBtn);
+        this.difficulty = this.aiSelectedDiff;
+
+        let chosenSide = this.aiSelectedSide;
+        if (chosenSide === 'random') {
+            chosenSide = Math.random() < 0.5 ? 'white' : 'black';
+        }
+
+        if (chosenSide === 'white') {
+            this.gameMode = 'ai-white';
+            this.isFlipped = false;
+        } else {
+            this.gameMode = 'ai-black';
+            this.isFlipped = true;
+        }
+
+        const sideName = chosenSide === 'white' ? 'Белые' : 'Чёрные';
+        this.dom.aiStatusTag.textContent =
+            `🤖 ИИ: ${this.getDifficultyLabel(this.difficulty)} (вы: ${sideName})`;
+        this.dom.aiActiveStatus.style.display = 'flex';
+        this.dom.tutorialCard.style.display = 'none';
+
+        this.startNewGame();
+    }
+
+    startCustomAiGame() {
+        let config;
+        try {
+            // Launching from «Своя игра» uses its current draft. Restarting
+            // from the in-game AI settings button must ignore a cancelled
+            // draft and reuse the last successfully applied configuration.
+            const source = this.aiModalReturnToCustom
+                ? this.getCustomFormConfig()
+                : (this.customGameConfig || this.getCustomFormConfig());
+            config = validateGameConfig(source);
+        } catch (err) {
+            this.returnToCustomSettings(err.message);
+            return;
+        }
+
+        let chosenSide = this.aiSelectedSide;
+        if (chosenSide === 'random') {
+            chosenSide = Math.random() < 0.5 ? 'white' : 'black';
+        }
+
+        const result = this.startNewGame(config, {
+            opponent: 'ai',
+            aiSide: chosenSide,
+            aiDifficulty: this.aiSelectedDiff
+        });
+
+        if (!result || !result.ok) {
+            const message = result && result.error && result.error.message
+                ? result.error.message
+                : 'Не удалось начать игру с выбранными настройками.';
+            this.returnToCustomSettings(message);
+            return;
+        }
+
+        this.dom.aiSettingsModal.classList.remove('open');
+        this.dom.aiSettingsModal.classList.remove('modal-stacked');
+        this.dom.customSettingsModal.classList.remove('open');
+        this.dom.customSettingsModal.classList.remove('modal-behind');
+        this.aiModalContext = 'standard';
+        this.aiModalReturnToCustom = false;
+    }
+
+    returnToCustomSettings(message) {
+        this.dom.aiSettingsModal.classList.remove('open');
+        this.dom.aiSettingsModal.classList.remove('modal-stacked');
+        this.dom.customSettingsModal.classList.remove('modal-behind');
+        this.aiModalContext = 'standard';
+        this.aiModalReturnToCustom = false;
+        this.dom.customSettingsError.textContent = message;
+        this.refreshCustomOpponentButtons(); // keep «Против ИИ» selected
+        this.dom.customSettingsModal.classList.add('open');
+    }
+
     /**
      * Opens the custom game settings. The form shows the last successfully
      * applied configuration, or the full standard deck on first launch.
      */
     openCustomSettings() {
+        this.dom.customSettingsModal.classList.remove('modal-behind');
+        this.customOpponentDraft = this.customOpponent;
+        this.refreshCustomOpponentButtons();
+
         const config = this.customGameConfig || getDefaultGameConfig();
         const normalized = normalizeGameConfig(config);
         const suitSet = new Set(normalized.suits);
@@ -3154,6 +3352,11 @@ class ChessDurakApp {
      * modal stays open with an explanation and the current game is untouched.
      */
     startCustomGame() {
+        if (this.customOpponentDraft === 'ai') {
+            this.openAiSettings('custom', { returnToCustom: true });
+            return;
+        }
+
         let config;
         try {
             config = validateGameConfig(this.getCustomFormConfig());
@@ -3162,7 +3365,7 @@ class ChessDurakApp {
             return;
         }
 
-        const result = this.startNewGame(config);
+        const result = this.startNewGame(config, { opponent: 'human' });
         if (!result || !result.ok) {
             const message = result && result.error && result.error.message
                 ? result.error.message
@@ -3344,10 +3547,16 @@ class ChessDurakApp {
     isVersusBot() {
         return this.gameMode === 'ai-white' ||
                this.gameMode === 'ai-black' ||
-               this.gameMode === 'tutorial';
+               this.gameMode === 'tutorial' ||
+               this.isCustomAiGame();
     }
 
     isAiTurn() {
+        if (this.gameMode === 'custom') {
+            return this.isCustomAiGame() &&
+                   this.engine.turn !== this.customAiSide;
+        }
+
         return (this.gameMode === 'ai-white' && this.engine.turn === 'black') ||
                (this.gameMode === 'ai-black' && this.engine.turn === 'white') ||
                (this.gameMode === 'tutorial' && this.engine.turn === 'black');
@@ -3391,7 +3600,7 @@ class ChessDurakApp {
      * the current game. Without an explicit configuration the standard deck is
      * used, except that an active custom game reuses its saved settings.
      */
-    startNewGame(config = undefined) {
+    startNewGame(config = undefined, customOptions = null) {
         const explicitCustom = config !== undefined && config !== null;
         const effectiveConfig = explicitCustom
             ? config
@@ -3408,12 +3617,40 @@ class ChessDurakApp {
         }
 
         if (appliedConfig) {
+            const opponent = (customOptions && customOptions.opponent)
+                ? customOptions.opponent
+                : this.customOpponent;
+
             this.customGameConfig = appliedConfig;
             this.gameMode = 'custom';
+            this.customOpponent = opponent;
+
+            if (opponent === 'ai') {
+                // customAiSide is the human player's side, so the AI takes the
+                // opposite color and the board is flipped when the human is black.
+                let aiSide = (customOptions && customOptions.aiSide)
+                    ? customOptions.aiSide
+                    : this.customAiSide;
+                if (aiSide === 'random') {
+                    aiSide = Math.random() < 0.5 ? 'white' : 'black';
+                }
+                this.customAiSide = aiSide;
+
+                if (customOptions && customOptions.aiDifficulty) {
+                    this.customAiDifficulty = customOptions.aiDifficulty;
+                }
+                this.difficulty = this.customAiDifficulty;
+
+                this.updateCustomAiStatusTag();
+                this.dom.aiActiveStatus.style.display = 'flex';
+                this.isFlipped = aiSide === 'black';
+            } else {
+                this.dom.aiActiveStatus.style.display = 'none';
+                this.isFlipped = false;
+            }
+
             this.setActiveModeBtn(this.dom.modeCustomBtn);
-            this.dom.aiActiveStatus.style.display = 'none';
             this.dom.tutorialCard.style.display = 'none';
-            this.isFlipped = false;
         }
 
         if (this.aiTimer) {
@@ -3761,6 +3998,20 @@ class ChessDurakApp {
                 } else {
                     this.showVictoryModal('Мат! Победил бот-новичок', 'Бот-новичок поставил мат. Попробуйте ещё раз — подсказка и отмена хода помогут.');
                 }
+            } else if (this.isCustomAiGame()) {
+                const aiSideName = this.customAiSide === 'white' ? 'Чёрные' : 'Белые';
+
+                if (result.winner === this.customAiSide) {
+                    this.showVictoryModal(
+                        'Мат! Вы победили!',
+                        `Вы поставили мат компьютеру (${this.customAiSide === 'white' ? 'Белые' : 'Чёрные'}).`
+                    );
+                } else {
+                    this.showVictoryModal(
+                        'Мат! Победил компьютер',
+                        `Компьютер (${aiSideName}) поставил мат.`
+                    );
+                }
             } else {
                 const winnerName = result.winner === 'white' ? 'Белых' : 'Чёрных';
                 this.showVictoryModal(`Мат! Победа ${winnerName}`, `Игрок (${winnerName}) поставил мат сопернику.`);
@@ -3781,11 +4032,15 @@ class ChessDurakApp {
 
         // Threefold Repetition Check
         if (result.threefold) {
-            if (this.gameMode === 'ai-white' || this.gameMode === 'ai-black') {
-                const isPlayerWhite = (this.gameMode === 'ai-white');
+            const aiOpponentMode = this.gameMode === 'ai-white' ||
+                                   this.gameMode === 'ai-black' ||
+                                   this.isCustomAiGame();
+
+            if (aiOpponentMode) {
+                const aiSide = this.getAiSide();
                 // Dedicated status: it is a loss, but NOT a check/mate (no "МАТ!" text, no check highlight)
                 this.engine.status = 'repetition';
-                this.engine.winner = isPlayerWhite ? 'black' : 'white';
+                this.engine.winner = aiSide;
                 this.renderAll();
                 sounds.check();
                 this.showVictoryModal('Поражение игроку!', 'Зафиксировано троекратное повторение позиции. При игре против ИИ засчитано поражение игроку.');
@@ -3884,26 +4139,28 @@ class ChessDurakApp {
         cardEl.classList.toggle('active-turn', isTurn);
 
         const isWhite = color === 'white';
-        let displayName = isWhite ? 'Белые' : 'Чёрные';
+        const aiSide = this.getAiSide();
+        const sideName = isWhite ? 'Белые' : 'Чёрные';
+        let displayName;
+
+        if (aiSide === color) {
+            displayName = `Компьютер (${sideName})`;
+        } else if (aiSide) {
+            displayName = this.gameMode === 'tutorial'
+                ? `Вы (${sideName})`
+                : `Игрок (${sideName})`;
+        } else {
+            displayName = sideName;
+        }
 
         if (avatarEl) {
             avatarEl.className = `player-avatar ${isWhite ? 'white-avatar' : 'black-avatar'}`;
             avatarEl.textContent = isWhite ? '♔' : '♚';
         }
 
-        if (this.gameMode === 'ai-white') {
-            displayName = isWhite ? 'Игрок (Белые)' : 'Компьютер (Чёрные)';
-        } else if (this.gameMode === 'ai-black') {
-            displayName = isWhite ? 'Компьютер (Белые)' : 'Игрок (Чёрные)';
-        } else if (this.gameMode === 'tutorial') {
-            displayName = isWhite ? 'Вы (Белые)' : 'Компьютер (Чёрные)';
-        }
         nameEl.textContent = displayName;
 
-        const isAiSide = this.gameMode === 'tutorial'
-            ? !isWhite
-            : ((this.gameMode === 'ai-white' && !isWhite) ||
-               (this.gameMode === 'ai-black' && isWhite));
+        const isAiSide = aiSide === color;
 
         if (isTurn) {
             const inCheck = this.engine.status === 'check';

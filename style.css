@@ -932,6 +932,23 @@ body {
     pointer-events: auto;
 }
 
+/* AI settings opened on top of the «Своя игра» modal: keep the custom
+   window visible in the background instead of closing it. */
+.modal-overlay.modal-stacked {
+    z-index: 110;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: none;
+}
+
+.modal-overlay.modal-behind {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.modal-overlay.open.modal-behind .modal-card {
+    transform: scale(0.94);
+    filter: brightness(0.72);
+}
+
 .modal-card {
     background: var(--bg-card);
     border: 1px solid var(--border-gold);
@@ -1075,6 +1092,9 @@ body {
 /* AI Settings Modal */
 .ai-settings-card {
     max-width: 500px;
+    /* Always fully opaque: the AI settings must look the same no matter
+       whether they are opened from the sidebar, the game HUD or «Своя игра». */
+    background: rgb(22, 29, 47);
 }
 
 .settings-group {
@@ -1093,6 +1113,10 @@ body {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 10px;
+}
+
+.custom-opponent-grid {
+    grid-template-columns: repeat(2, 1fr);
 }
 
 .side-option-btn {
@@ -1225,6 +1249,14 @@ body {
     overflow-y: auto;
     padding: 4px 22px 8px;
     overscroll-behavior: contain;
+    /* The window stays scrollable, but without a visible scrollbar. */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.custom-settings-body::-webkit-scrollbar {
+    width: 0;
+    height: 0;
 }
 
 .custom-settings-card .modal-footer {
