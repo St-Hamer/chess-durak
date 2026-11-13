@@ -1073,59 +1073,96 @@ class Board {
 /**
  * Chess Durak - Core Rules, Move Validation, Suit Captures, Bank Spawning & Reserves
  */
+// Direction tables are shared constants: isSquareAttackedBy() and
+// getPseudoLegalMoves() run millions of times per search, so allocating these
+// arrays on each call showed up as a measurable part of the node cost.
+const KNIGHT_OFFSETS = [
+    [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+    [1, -2], [1, 2], [2, -1], [2, 1]
+];
+const KING_OFFSETS = [
+    [-1, -1], [-1, 0], [-1, 1],
+    [0, -1], [0, 1],
+    [1, -1], [1, 0], [1, 1]
+];
+const BISHOP_DIRS = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+const ROOK_DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+const QUEEN_DIRS = [...BISHOP_DIRS, ...ROOK_DIRS];
+
+/**
+ * The suit-matching capture rule shared by move generation and validation.
+ * Hoisted out of getPseudoLegalMoves() to avoid a closure allocation on every
+ * call of that hot function.
+ */
+function canCapturePiece(attackerColor, attackerType, attackerSuit, targetPiece) {
+    if (!targetPiece || targetPiece.color === attackerColor) return false;
+    // King can be attacked by any piece ("Любая фигура может дать шах королю")
+    if (targetPiece.type === 'K') return true;
+    // King attacker has no suit -> King can capture any enemy piece!
+    if (attackerType === 'K') return true;
+    // After the suit reset every board piece is suitless: any piece may
+    // capture any enemy piece regardless of its (now absent) suit.
+    if (attackerSuit === null && targetPiece.suit === null) return true;
+    // Otherwise, must match suit!
+    return targetPiece.suit === attackerSuit;
+}
+
+// Scratch buffers for getPseudoLegalMoves(): avoids allocating three arrays per
+// call while move generation runs for every piece at every node.
+const PSEUDO_SCRATCH_R = new Int32Array(64);
+const PSEUDO_SCRATCH_C = new Int32Array(64);
+const PSEUDO_SCRATCH_CAP = new Uint8Array(64);
 class GameRules {
     /**
      * Check if a square (targetR, targetC) is geometrically attacked by pieces of attackerColor
      */
     static isSquareAttackedBy(board, targetR, targetC, attackerColor) {
+        const grid = board.grid;
+
         // 1. Check enemy Pawns
         const pawnDir = attackerColor === 'white' ? 1 : -1; // Where attacker pawn must be to attack
         const pawnSourceR = targetR + pawnDir;
-        if (board.isInBounds(pawnSourceR, targetC - 1)) {
-            const p = board.getPiece(pawnSourceR, targetC - 1);
-            if (p && p.color === attackerColor && p.type === 'P') return true;
-        }
-        if (board.isInBounds(pawnSourceR, targetC + 1)) {
-            const p = board.getPiece(pawnSourceR, targetC + 1);
-            if (p && p.color === attackerColor && p.type === 'P') return true;
+        if (pawnSourceR >= 0 && pawnSourceR < 8) {
+            const left = targetC - 1;
+            if (left >= 0) {
+                const p = grid[pawnSourceR][left];
+                if (p && p.color === attackerColor && p.type === 'P') return true;
+            }
+            const right = targetC + 1;
+            if (right < 8) {
+                const p = grid[pawnSourceR][right];
+                if (p && p.color === attackerColor && p.type === 'P') return true;
+            }
         }
 
         // 2. Check enemy Knights
-        const knightOffsets = [
-            [-2, -1], [-2, 1], [-1, -2], [-1, 2],
-            [1, -2], [1, 2], [2, -1], [2, 1]
-        ];
-        for (const [dr, dc] of knightOffsets) {
-            const nr = targetR + dr;
-            const nc = targetC + dc;
-            if (board.isInBounds(nr, nc)) {
-                const p = board.getPiece(nr, nc);
+        for (let i = 0; i < KNIGHT_OFFSETS.length; i++) {
+            const nr = targetR + KNIGHT_OFFSETS[i][0];
+            const nc = targetC + KNIGHT_OFFSETS[i][1];
+            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                const p = grid[nr][nc];
                 if (p && p.color === attackerColor && p.type === 'N') return true;
             }
         }
 
         // 3. Check enemy King
-        const kingOffsets = [
-            [-1, -1], [-1, 0], [-1, 1],
-            [0, -1],           [0, 1],
-            [1, -1],  [1, 0],  [1, 1]
-        ];
-        for (const [dr, dc] of kingOffsets) {
-            const kr = targetR + dr;
-            const kc = targetC + dc;
-            if (board.isInBounds(kr, kc)) {
-                const p = board.getPiece(kr, kc);
+        for (let i = 0; i < KING_OFFSETS.length; i++) {
+            const kr = targetR + KING_OFFSETS[i][0];
+            const kc = targetC + KING_OFFSETS[i][1];
+            if (kr >= 0 && kr < 8 && kc >= 0 && kc < 8) {
+                const p = grid[kr][kc];
                 if (p && p.color === attackerColor && p.type === 'K') return true;
             }
         }
 
         // 4. Check straight rays (Rook & Queen)
-        const straightDirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-        for (const [dr, dc] of straightDirs) {
+        for (let i = 0; i < ROOK_DIRS.length; i++) {
+            const dr = ROOK_DIRS[i][0];
+            const dc = ROOK_DIRS[i][1];
             let r = targetR + dr;
             let c = targetC + dc;
-            while (board.isInBounds(r, c)) {
-                const p = board.getPiece(r, c);
+            while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+                const p = grid[r][c];
                 if (p) {
                     if (p.color === attackerColor && (p.type === 'R' || p.type === 'Q')) {
                         return true;
@@ -1138,12 +1175,13 @@ class GameRules {
         }
 
         // 5. Check diagonal rays (Bishop & Queen)
-        const diagDirs = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-        for (const [dr, dc] of diagDirs) {
+        for (let i = 0; i < BISHOP_DIRS.length; i++) {
+            const dr = BISHOP_DIRS[i][0];
+            const dc = BISHOP_DIRS[i][1];
             let r = targetR + dr;
             let c = targetC + dc;
-            while (board.isInBounds(r, c)) {
-                const p = board.getPiece(r, c);
+            while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+                const p = grid[r][c];
                 if (p) {
                     if (p.color === attackerColor && (p.type === 'B' || p.type === 'Q')) {
                         return true;
@@ -1169,38 +1207,36 @@ class GameRules {
     }
 
     /**
-     * Generate pseudo-legal moves for a piece at (r, c)
-     * Enforces the Suit-Matching Capture Rule!
+     * Fill preallocated buffers with every pseudo-legal move of a piece.
+     * Returns the number of moves written. This is the single implementation
+     * of move geometry: the array builder, the visitor and the evaluation
+     * threat scan all go through it, so they cannot diverge.
+     *
+     * `outR`, `outC` and `outCap` must have room for a whole board (64).
+     * Moves are written in the same order as the original array builder, which
+     * keeps move ordering and therefore the search deterministic.
      */
-    static getPseudoLegalMoves(board, r, c) {
-        const piece = board.getPiece(r, c);
-        if (!piece) return [];
+    static fillPseudoLegalMoves(board, r, c, outR, outC, outCap) {
+        const grid = board.grid;
+        const piece = (r >= 0 && r < 8 && c >= 0 && c < 8) ? grid[r][c] : null;
+        if (!piece) return 0;
 
-        const moves = [];
-        const { color, type, suit } = piece;
-
-        // Helper to check if piece can capture target
-        const canCapture = (targetPiece) => {
-            if (!targetPiece || targetPiece.color === color) return false;
-            // King can be attacked by any piece ("Любая фигура может дать шах королю")
-            if (targetPiece.type === 'K') return true;
-            // King attacker has no suit -> King can capture any enemy piece!
-            if (type === 'K') return true;
-            // After the suit reset every board piece is suitless: any piece may
-            // capture any enemy piece regardless of its (now absent) suit.
-            if (suit === null && targetPiece.suit === null) return true;
-            // Otherwise, must match suit!
-            return targetPiece.suit === suit;
-        };
+        const color = piece.color;
+        const type = piece.type;
+        const suit = piece.suit;
+        let n = 0;
 
         // 1. PAWN
         if (type === 'P') {
             const dir = color === 'white' ? -1 : 1;
-            
+
             // Forward 1
             const nextR = r + dir;
-            if (board.isInBounds(nextR, c) && board.getPiece(nextR, c) === null) {
-                moves.push({ r: nextR, c });
+            if (nextR >= 0 && nextR < 8 && grid[nextR][c] === null) {
+                outR[n] = nextR;
+                outC[n] = c;
+                outCap[n] = 0;
+                n++;
 
                 // Forward 2 from starting rank ONLY if piece has not moved yet
                 const isPawnStart = !piece.hasMoved && (
@@ -1208,18 +1244,24 @@ class GameRules {
                     (color === 'black' && (r === 1 || r === 0))
                 );
                 const next2R = r + 2 * dir;
-                if (isPawnStart && board.isInBounds(next2R, c) && board.getPiece(next2R, c) === null) {
-                    moves.push({ r: next2R, c });
+                if (isPawnStart && next2R >= 0 && next2R < 8 && grid[next2R][c] === null) {
+                    outR[n] = next2R;
+                    outC[n] = c;
+                    outCap[n] = 0;
+                    n++;
                 }
             }
 
             // Diagonal captures
-            const capCols = [c - 1, c + 1];
-            for (const capC of capCols) {
-                if (board.isInBounds(nextR, capC)) {
-                    const target = board.getPiece(nextR, capC);
-                    if (target && canCapture(target)) {
-                        moves.push({ r: nextR, c: capC, isCapture: true });
+            for (let k = -1; k <= 1; k += 2) {
+                const capC = c + k;
+                if (nextR >= 0 && nextR < 8 && capC >= 0 && capC < 8) {
+                    const target = grid[nextR][capC];
+                    if (target && canCapturePiece(color, type, suit, target)) {
+                        outR[n] = nextR;
+                        outC[n] = capC;
+                        outCap[n] = 1;
+                        n++;
                     }
                 }
             }
@@ -1227,19 +1269,21 @@ class GameRules {
 
         // 2. KNIGHT
         else if (type === 'N') {
-            const offsets = [
-                [-2, -1], [-2, 1], [-1, -2], [-1, 2],
-                [1, -2], [1, 2], [2, -1], [2, 1]
-            ];
-            for (const [dr, dc] of offsets) {
-                const tr = r + dr;
-                const tc = c + dc;
-                if (board.isInBounds(tr, tc)) {
-                    const target = board.getPiece(tr, tc);
+            for (let i = 0; i < KNIGHT_OFFSETS.length; i++) {
+                const tr = r + KNIGHT_OFFSETS[i][0];
+                const tc = c + KNIGHT_OFFSETS[i][1];
+                if (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+                    const target = grid[tr][tc];
                     if (target === null) {
-                        moves.push({ r: tr, c: tc });
-                    } else if (canCapture(target)) {
-                        moves.push({ r: tr, c: tc, isCapture: true });
+                        outR[n] = tr;
+                        outC[n] = tc;
+                        outCap[n] = 0;
+                        n++;
+                    } else if (canCapturePiece(color, type, suit, target)) {
+                        outR[n] = tr;
+                        outC[n] = tc;
+                        outCap[n] = 1;
+                        n++;
                     }
                 }
             }
@@ -1247,24 +1291,26 @@ class GameRules {
 
         // 3. BISHOP, ROOK, QUEEN
         else if (type === 'B' || type === 'R' || type === 'Q') {
-            const dirs = [];
-            if (type === 'B' || type === 'Q') {
-                dirs.push([-1, -1], [-1, 1], [1, -1], [1, 1]);
-            }
-            if (type === 'R' || type === 'Q') {
-                dirs.push([-1, 0], [1, 0], [0, -1], [0, 1]);
-            }
+            const dirs = type === 'B' ? BISHOP_DIRS : type === 'R' ? ROOK_DIRS : QUEEN_DIRS;
 
-            for (const [dr, dc] of dirs) {
+            for (let i = 0; i < dirs.length; i++) {
+                const dr = dirs[i][0];
+                const dc = dirs[i][1];
                 let tr = r + dr;
                 let tc = c + dc;
-                while (board.isInBounds(tr, tc)) {
-                    const target = board.getPiece(tr, tc);
+                while (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+                    const target = grid[tr][tc];
                     if (target === null) {
-                        moves.push({ r: tr, c: tc });
+                        outR[n] = tr;
+                        outC[n] = tc;
+                        outCap[n] = 0;
+                        n++;
                     } else {
-                        if (canCapture(target)) {
-                            moves.push({ r: tr, c: tc, isCapture: true });
+                        if (canCapturePiece(color, type, suit, target)) {
+                            outR[n] = tr;
+                            outC[n] = tc;
+                            outCap[n] = 1;
+                            n++;
                         }
                         // Stop raycast when hitting any piece
                         break;
@@ -1277,25 +1323,47 @@ class GameRules {
 
         // 4. KING
         else if (type === 'K') {
-            const dirs = [
-                [-1, -1], [-1, 0], [-1, 1],
-                [0, -1],           [0, 1],
-                [1, -1],  [1, 0],  [1, 1]
-            ];
-            for (const [dr, dc] of dirs) {
-                const tr = r + dr;
-                const tc = c + dc;
-                if (board.isInBounds(tr, tc)) {
-                    const target = board.getPiece(tr, tc);
+            for (let i = 0; i < KING_OFFSETS.length; i++) {
+                const tr = r + KING_OFFSETS[i][0];
+                const tc = c + KING_OFFSETS[i][1];
+                if (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+                    const target = grid[tr][tc];
                     if (target === null) {
-                        moves.push({ r: tr, c: tc });
-                    } else if (canCapture(target)) {
-                        moves.push({ r: tr, c: tc, isCapture: true });
+                        outR[n] = tr;
+                        outC[n] = tc;
+                        outCap[n] = 0;
+                        n++;
+                    } else if (canCapturePiece(color, type, suit, target)) {
+                        outR[n] = tr;
+                        outC[n] = tc;
+                        outCap[n] = 1;
+                        n++;
                     }
                 }
             }
         }
 
+        return n;
+    }
+
+    /**
+     * Generate pseudo-legal moves for a piece at (r, c)
+     * Enforces the Suit-Matching Capture Rule!
+     */
+    static getPseudoLegalMoves(board, r, c) {
+        // Shared scratch is safe here: the buffer is filled and fully
+        // materialized into fresh objects before this function returns, and no
+        // callback runs in between, so there is no re-entrancy.
+        const outR = PSEUDO_SCRATCH_R;
+        const outC = PSEUDO_SCRATCH_C;
+        const outCap = PSEUDO_SCRATCH_CAP;
+        const n = this.fillPseudoLegalMoves(board, r, c, outR, outC, outCap);
+        const moves = new Array(n);
+        for (let i = 0; i < n; i++) {
+            moves[i] = outCap[i] === 1
+                ? { r: outR[i], c: outC[i], isCapture: true }
+                : { r: outR[i], c: outC[i] };
+        }
         return moves;
     }
 
@@ -1303,21 +1371,42 @@ class GameRules {
      * Get strictly legal moves for piece at (r, c) (filters moves that leave king in check)
      */
     static getLegalMoves(board, r, c) {
-        const piece = board.getPiece(r, c);
+        const grid = board.grid;
+        const piece = (r >= 0 && r < 8 && c >= 0 && c < 8) ? grid[r][c] : null;
         if (!piece) return [];
 
         const pseudoMoves = this.getPseudoLegalMoves(board, r, c);
         const legalMoves = [];
+        const color = piece.color;
+        const opponentColor = color === 'white' ? 'black' : 'white';
+        const isKing = piece.type === 'K';
 
+        // The king cannot move during this loop unless the tested piece IS the
+        // king, so its square is looked up once instead of rescanning the board
+        // for every candidate move.
+        const kingPos = isKing ? null : board.findKing(color);
+
+        // Simulate every move with make/undo on the same board instead of
+        // cloning it. hasMoved is irrelevant for the check test, so it is
+        // deliberately left untouched.
         for (const move of pseudoMoves) {
-            // Simulate move
-            const simBoard = board.clone();
-            simBoard.removePiece(move.r, move.c);
-            const simPiece = simBoard.removePiece(r, c);
-            simBoard.setPiece(move.r, move.c, simPiece);
+            const captured = grid[move.r][move.c];
+            grid[r][c] = null;
+            grid[move.r][move.c] = piece;
 
-            // King cannot remain/enter in check
-            if (!this.isKingInCheck(simBoard, piece.color)) {
+            let safe;
+            if (isKing) {
+                safe = !this.isSquareAttackedBy(board, move.r, move.c, opponentColor);
+            } else if (kingPos) {
+                safe = !this.isSquareAttackedBy(board, kingPos.r, kingPos.c, opponentColor);
+            } else {
+                safe = !this.isKingInCheck(board, color);
+            }
+
+            grid[move.r][move.c] = captured || null;
+            grid[r][c] = piece;
+
+            if (safe) {
                 legalMoves.push(move);
             }
         }
@@ -1401,6 +1490,7 @@ class GameState {
         this.capturedBlack = [];
         this.delayedSpawns = [];
         this.spawnEvents = [];
+        this.positionHistory = {}; // Key -> count for threefold repetition (AI search copies it)
         this.status = 'playing'; // 'playing' | 'check' | 'checkmate' | 'stalemate' | 'repetition'
         this.winner = null;      // 'white' | 'black' | 'draw' | null
         this.drawReason = null;  // 'stalemate' | 'agreement' | 'suits_agreement' | null
@@ -1417,6 +1507,41 @@ class GameState {
     nextRandom() {
         if (!this.rng) return Math.random();
         return typeof this.rng === 'function' ? this.rng() : this.rng.next();
+    }
+
+    /**
+     * Creates a unique canonical key for the current game position.
+     * It lives on GameState because the AI clones state into a GameState and
+     * needs the same repetition keys as the real engine.
+     */
+    getPositionKey() {
+        let key = `${this.turn}|`;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = this.board.grid[r][c];
+                if (p) {
+                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''}`;
+                    // Pawn's two-square right depends on hasMoved, so it is part of the position
+                    if (p.type === 'P') {
+                        key += `H${p.hasMoved ? 1 : 0}`;
+                    }
+                    key += ';';
+                }
+            }
+        }
+        key += '|W_RES:';
+        for (const p of this.whiteReserve) {
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
+        }
+        key += '|B_RES:';
+        for (const p of this.blackReserve) {
+            key += `${p.type}${p.suit}${p.squareColor || ''};`;
+        }
+        key += '|DELAY:';
+        for (const d of this.delayedSpawns) {
+            key += `${d.player}:${d.piece.type}${d.piece.suit || 'X'}${d.piece.squareColor || ''};`;
+        }
+        return key;
     }
 
     /**
@@ -1673,7 +1798,7 @@ class GameState {
      * It intentionally does not touch history, notation, repetition or the
      * suit-draw offer; GameEngine.makeMove() adds those on top.
      */
-    applyMoveCore(fromR, fromC, toR, toC, promotionChoice = null) {
+    applyMoveCore(fromR, fromC, toR, toC, promotionChoice = null, options = {}) {
         this.spawnEvents = [];
         const movingColor = this.turn;
         const opponentColor = movingColor === 'white' ? 'black' : 'white';
@@ -1780,6 +1905,22 @@ class GameState {
         // 7. Switch turn
         this.turn = opponentColor;
 
+        // 7b. Optional threefold tracking for AI search. makeMove() keeps its
+        // own repetition logic, so it calls applyMoveCore() without this flag.
+        if (options.trackRepetition) {
+            if (!this.positionHistory) this.positionHistory = {};
+            const positionKey = this.getPositionKey();
+            const count = (this.positionHistory[positionKey] || 0) + 1;
+            this.positionHistory[positionKey] = count;
+            if (count >= 3 &&
+                this.status !== 'checkmate' &&
+                this.status !== 'stalemate') {
+                this.status = 'repetition';
+                this.winner = 'draw';
+                this.drawReason = 'repetition';
+            }
+        }
+
         return {
             movingColor,
             opponentColor,
@@ -1810,6 +1951,7 @@ class GameState {
             player: d.player
         }));
         s.spawnEvents = [];
+        s.positionHistory = { ...(this.positionHistory || {}) };
         s.turn = this.turn;
         s.status = this.status;
         s.winner = this.winner;
@@ -1860,7 +2002,7 @@ class GameEngine extends GameState {
         // Keep exactly the requested number of bank cards. The remaining deck
         // is already shuffled, so truncation is a random subset.
         if (deck.length < gameConfig.bankSize) {
-            throw new Error('В колоде недостаточно карт для выбранного размера банка.');
+            throw new Error('Р’ РєРѕР»РѕРґРµ РЅРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РєР°СЂС‚ РґР»СЏ РІС‹Р±СЂР°РЅРЅРѕРіРѕ СЂР°Р·РјРµСЂР° Р±Р°РЅРєР°.');
         }
         if (deck.length > gameConfig.bankSize) {
             for (let i = deck.length - 1; i > 0; i--) {
@@ -1904,39 +2046,6 @@ class GameEngine extends GameState {
         return this.status === 'checkmate' ||
                this.status === 'stalemate' ||
                this.status === 'repetition';
-    }
-
-    /**
-     * Creates a unique canonical key for the current game position
-     */
-    getPositionKey() {
-        let key = `${this.turn}|`;
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const p = this.board.grid[r][c];
-                if (p) {
-                    key += `${r}${c}:${p.color}${p.type}${p.suit || 'X'}${p.squareColor || ''}`;
-                    // Pawn's two-square right depends on hasMoved, so it is part of the position
-                    if (p.type === 'P') {
-                        key += `H${p.hasMoved ? 1 : 0}`;
-                    }
-                    key += ';';
-                }
-            }
-        }
-        key += '|W_RES:';
-        for (const p of this.whiteReserve) {
-            key += `${p.type}${p.suit}${p.squareColor || ''};`;
-        }
-        key += '|B_RES:';
-        for (const p of this.blackReserve) {
-            key += `${p.type}${p.suit}${p.squareColor || ''};`;
-        }
-        key += '|DELAY:';
-        for (const d of this.delayedSpawns) {
-            key += `${d.player}:${d.piece.type}${d.piece.suit || 'X'}${d.piece.squareColor || ''};`;
-        }
-        return key;
     }
 
     /**
@@ -2184,25 +2293,101 @@ class GameEngine extends GameState {
 /**
  * Chess Durak - Intelligent AI Engine
  *
- * Medium and hard search the complete game state (board, bank, reserves,
+ * Medium and hard search the full game state (board, bank composition, reserves,
  * delayed spawns, captures, suit-reset flag and status) by cloning a
  * GameState and applying real moves through applyMoveCore().
+ *
+ * Design notes:
+ * - the search is iterative-deepening alpha-beta with quiescence;
+ * - move generation uses make/undo instead of cloning the board;
+ * - the bank order is hidden by default ("fair bank"): a copy of the deck is
+ *   shuffled before the search, so the AI knows the composition but not the
+ *   order of the remaining cards;
+ * - medium keeps its random noise, but the RNG can be injected through an
+ *   optional parameter for reproducible benchmarks.
  */
 const MATE = 100000;
+const MATE_THRESHOLD = MATE - 1000;
 const RESERVE_WEIGHT = 0.9;
 const DELAYED_WEIGHT = 0.9;
+
+// Precomputed positional terms for evaluateBoard(): the centre bonus per
+// square and the pawn advance bonus per rank. Both were recomputed with
+// Math.abs() for every piece on every leaf, which is pure overhead.
+const CENTER_BONUS = new Array(64);
+for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+        const centerDist = Math.abs(3.5 - r) + Math.abs(3.5 - c);
+        CENTER_BONUS[r * 8 + c] = (7 - centerDist) * 5;
+    }
+}
+const WHITE_PAWN_ADVANCE = new Array(8);
+const BLACK_PAWN_ADVANCE = new Array(8);
+for (let r = 0; r < 8; r++) {
+    WHITE_PAWN_ADVANCE[r] = (7 - r) * 18;
+    BLACK_PAWN_ADVANCE[r] = r * 18;
+}
+
+const TT_MAX_ENTRIES = 200000;
+const MAX_QDEPTH_HARD = 6;
+const MAX_QDEPTH_MEDIUM = 4;
+const Q_DELTA = 200;
+const MAX_EXTENSIONS = 2;
+
+const TYPE_CODES = { P: 1, N: 2, B: 3, R: 4, Q: 5, K: 6 };
+const COLOR_CODES = { white: 1, black: 2 };
+const SUIT_CODES = { spades: 1, clubs: 2, hearts: 3, diamonds: 4 };
+const SQUARE_CODES = { light: 1, dark: 2 };
+
+const STATUS_CODES = {
+    playing: 1,
+    check: 2,
+    checkmate: 3,
+    stalemate: 4,
+    repetition: 5
+};
+
+function sameMove(a, b) {
+    return !!a && !!b &&
+        a.from.r === b.from.r && a.from.c === b.from.c &&
+        a.to.r === b.to.r && a.to.c === b.to.c;
+}
 class ChessDurakAI {
     constructor(engine) {
         this.engine = engine;
         this.searchDeadline = 0;
+        this.softDeadline = 0;
         this._nodes = 0;
+        this._searchNodes = 0;
+        this._maxPly = 0;
         this.searchAborted = false;
+        this.isHard = false;
+        this.useTT = true;
+        this.rand = Math.random;
+
+        // Search tables are re-created for every findBestMove().
+        this.killers = [];
+        this.history = new Int32Array(64 * 64 * 2);
+        this.tt = new Map();
+        this.lastStats = null;
+
+        // Scratch buffers for evaluateBoard(): pseudo-legal moves are written
+        // here instead of allocating a move list for every piece on every leaf.
+        this._moveR = new Int32Array(64);
+        this._moveC = new Int32Array(64);
+        this._moveCap = new Uint8Array(64);
     }
 
     /**
      * Choose the best move for the AI color.
+     *
+     * Optional `options`:
+     * - `rand`: RNG function used for medium noise (default Math.random);
+     * - `seed`: seed for the fair-bank shuffle (default random);
+     * - `fairBank`: set to false to restore the old "see the deck" behaviour.
      */
-    async findBestMove(color, difficulty = 'medium') {
+    async findBestMove(color, difficulty = 'medium', options = {}) {
+        const rand = typeof options.rand === 'function' ? options.rand : Math.random;
         const root = this.engine.cloneState();
         const legalMoves = GameRules.getAllLegalMoves(root.board, color);
         if (legalMoves.length === 0) return null;
@@ -2211,12 +2396,14 @@ class ChessDurakAI {
 
         if (difficulty === 'easy') {
             // Easy: prioritize captures, otherwise random. No search.
+            // The call order is kept identical to the original bot so an
+            // injected RNG reproduces its baseline behaviour.
             const captures = legalMoves.filter(m => m.isCapture);
             let chosenMove = null;
-            if (captures.length > 0 && Math.random() < 0.7) {
-                chosenMove = captures[Math.floor(Math.random() * captures.length)];
+            if (captures.length > 0 && rand() < 0.7) {
+                chosenMove = captures[Math.floor(rand() * captures.length)];
             } else {
-                chosenMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+                chosenMove = legalMoves[Math.floor(rand() * legalMoves.length)];
             }
             if (chosenMove) {
                 chosenMove.promotionChoice = this.getPromotionChoice(this.engine, chosenMove, color);
@@ -2224,25 +2411,59 @@ class ChessDurakAI {
             return chosenMove;
         }
 
-        const isHard = (difficulty === 'hard');
-        const maxDepth = isHard ? 3 : 2;
-        const timeLimitMs = isHard ? 1500 : 800;
-        const deadline = Date.now() + timeLimitMs;
-        this.searchDeadline = deadline;
-        this._nodes = 0;
+        // Fair bank: the composition is known, the order is not. Shuffling a
+        // copy before the search removes the "peek at the top card" effect.
+        if (options.fairBank !== false) {
+            root.deck = this.shuffleDeck(root.deck, options.seed);
+        }
 
-        // Ordering is computed once per root call; it uses Math.random() only
-        // for medium noise and never consumes the state RNG.
-        const orderedMoves = this.orderMoves(root, legalMoves, color, isHard);
+        const isHard = (difficulty === 'hard');
+        const requestedDepth = Number.isFinite(options.maxDepth)
+            ? Math.max(1, Math.trunc(options.maxDepth))
+            : (isHard ? 4 : 3);
+        const maxDepth = requestedDepth;
+        const softMs = isHard ? 1500 : 800;
+        const hardMs = isHard ? 2000 : 800;
+        const start = Date.now();
+
+        this.softDeadline = start + softMs;
+        this.searchDeadline = start + hardMs;
+        this._nodes = 0;
+        this._searchNodes = 0;
+        this._maxPly = 0;
+        this.searchAborted = false;
+        this.isHard = isHard;
+        this.useTT = options.useTT !== false;
+        this.rand = rand;
+        this.killers = [];
+        this.history.fill(0);
+        this.tt = new Map();
+
+        // Ordering is computed once per root call; it uses `rand` only for
+        // medium noise and never consumes the state RNG.
+        const orderedMoves = this.orderMoves(root, legalMoves, color, isHard, 0, null);
 
         let bestMove = null;
+        let bestScore = -Infinity;
+        let depthCompleted = 0;
+        let previousIterationMs = 0;
 
         // Iterative deepening: only a fully completed depth may replace the
         // best move. A depth that ran out of time inside minimax is discarded,
         // so the result of the last fully completed depth remains selected.
         for (let depth = 1; depth <= maxDepth; depth++) {
-            if (Date.now() >= deadline) break;
+            if (depth > 1) {
+                if (Date.now() >= this.softDeadline) break;
 
+                // Do not start an iteration that is very unlikely to finish
+                // inside the soft budget (previous iteration x 3).
+                if (previousIterationMs > 0 &&
+                    Date.now() + previousIterationMs * 3 > this.softDeadline) {
+                    break;
+                }
+            }
+
+            const iterationStart = Date.now();
             this.searchAborted = false;
             let iterationBest = null;
             let iterationScore = -Infinity;
@@ -2250,34 +2471,48 @@ class ChessDurakAI {
             const scoreByMove = new Map();
 
             for (const move of orderedMoves) {
-                // The deadline may pass between root moves; an incomplete
-                // iteration can never be accepted.
-                if (Date.now() >= deadline) {
+                // An already started iteration runs until the hard deadline;
+                // the soft deadline only decides whether a new depth starts.
+                if (Date.now() >= this.searchDeadline) {
                     completed = false;
                     break;
                 }
 
-                await new Promise(r => setTimeout(r, 0));
+                await this.yieldToEventLoop();
 
+                if (Date.now() >= this.searchDeadline) {
+                    completed = false;
+                    break;
+                }
+
+                // A single root move may block the event loop until it either
+                // finishes or reaches the hard search deadline; there is no
+                // per-move time-slice, so no started work is thrown away.
                 const state = root.cloneState();
                 const promotionChoice = this.getPromotionChoice(state, move, color);
-                state.applyMoveCore(
+                const core = state.applyMoveCore(
                     move.from.r, move.from.c,
                     move.to.r, move.to.c,
-                    promotionChoice
-                );
+                    promotionChoice,
+                    { trackRepetition: true });
 
                 let score;
                 if (state.status === 'checkmate') {
                     score = state.winner === color ? MATE : -MATE;
-                } else if (state.status === 'stalemate') {
+                } else if (state.status === 'stalemate' || state.status === 'repetition') {
                     score = 0;
                 } else {
+                    // Check and promotion extensions also apply to the root
+                    // move, so a forcing line is not cut one ply early.
+                    let rootExtension = 0;
+                    if (core.opponentInCheck) rootExtension++;
+                    if (core.isPromotion) rootExtension++;
+
                     // Root is maximizing: the best score so far is a valid
                     // alpha bound for the remaining moves.
                     score = this.minimax(
-                        state, depth - 1, iterationScore, Infinity,
-                        color, state.turn, isHard, 1
+                        state, depth - 1 + rootExtension, iterationScore, Infinity,
+                        color, state.turn, isHard, 1, core.opponentMoves, rootExtension
                     );
                 }
 
@@ -2297,13 +2532,22 @@ class ChessDurakAI {
 
             if (iterationBest && completed && !this.searchAborted) {
                 bestMove = iterationBest;
+                bestScore = iterationScore;
+                depthCompleted = depth;
+                previousIterationMs = Date.now() - iterationStart;
 
                 // Search the most promising root moves first at the next depth.
                 orderedMoves.sort(
                     (a, b) => scoreByMove.get(b) - scoreByMove.get(a)
                 );
             }
-            if (!completed || this.searchAborted || Date.now() >= deadline) break;
+
+            if (!completed || this.searchAborted || Date.now() >= this.softDeadline) {
+                // After an emergency abort, let the UI render a frame before
+                // returning the move from the last completed depth.
+                if (this.searchAborted) await this.yieldToEventLoop();
+                break;
+            }
         }
 
         const finalMove = bestMove || orderedMoves[0] || legalMoves[0];
@@ -2312,52 +2556,128 @@ class ChessDurakAI {
             if (promotionChoice) finalMove.promotionChoice = promotionChoice;
         }
 
+        this.lastStats = {
+            difficulty,
+            depthReached: this._maxPly,
+            depthCompleted,
+            nodes: this._searchNodes,
+            timeMs: Date.now() - start,
+            score: bestScore,
+            aborted: this.searchAborted
+        };
+
         return finalMove;
     }
 
     /**
-     * Orders moves with MVV-LVA. Uses only the board and the average bank
-     * value; it never clones the full state and never consumes state.rng.
+     * Fisher-Yates shuffle of a deck copy. A numeric seed makes benchmarks
+     * reproducible; an omitted seed keeps the production randomness.
      */
-    orderMoves(state, moves, color, isHard) {
+    shuffleDeck(deck, seed) {
+        const copy = [...deck];
+        let rand;
+        if (seed === undefined || seed === null) {
+            rand = Math.random;
+        } else {
+            const rng = new SeededRng(seed);
+            rand = () => rng.next();
+        }
+        for (let i = copy.length - 1; i > 0; i--) {
+            const j = Math.floor(rand() * (i + 1));
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+        }
+        return copy;
+    }
+
+    isPromotionMove(state, move, color) {
+        const piece = state.board.getPiece(move.from.r, move.from.c);
+        if (!piece || piece.type !== 'P') return false;
+        return move.to.r === (color === 'white' ? 0 : 7);
+    }
+
+    historyKey(color, move) {
+        const from = move.from.r * 8 + move.from.c;
+        const to = move.to.r * 8 + move.to.c;
+        return ((from * 64) + to) * 2 + (color === 'white' ? 0 : 1);
+    }
+
+    recordCutoff(ply, move, depth, color) {
+        const killers = this.killers[ply] || (this.killers[ply] = []);
+        if (!sameMove(killers[0], move)) {
+            killers[1] = killers[0];
+            killers[0] = move;
+        }
+
+        const key = this.historyKey(color, move);
+        const bonus = Math.max(1, depth * depth);
+        const next = this.history[key] + bonus;
+        this.history[key] = next > 1000000 ? 1000000 : next;
+    }
+
+    /**
+     * Orders moves:
+     * TT move, killers, history, MVV-LVA captures, promotions, checks, pawn
+     * advance, then the rest. Uses only board make/undo; it never clones the
+     * state and never consumes the state RNG.
+     */
+    orderMoves(state, moves, color, isHard, ply = 0, ttMove = null) {
         const board = state.board;
         const oppColor = color === 'white' ? 'black' : 'white';
         const avgBank = state.deck.length
             ? state.deck.reduce((sum, c) => sum + (PIECE_VALUES[c.type] || 0), 0) / state.deck.length
             : 0;
+        const killers = this.killers[ply] || [];
+        const promoRank = color === 'white' ? 0 : 7;
 
         const scoredMoves = moves.map(m => {
             let priority = 0;
             const attacker = board.getPiece(m.from.r, m.from.c);
             const target = board.getPiece(m.to.r, m.to.c);
 
+            if (ttMove && sameMove(m, ttMove)) {
+                priority += 1000000;
+            }
+            if (sameMove(m, killers[0])) {
+                priority += 900000;
+            } else if (sameMove(m, killers[1])) {
+                priority += 800000;
+            }
+
+            const history = this.history[this.historyKey(color, m)] || 0;
+            priority += Math.min(history, 500000);
+
             if (m.isCapture && target) {
                 const victimVal = PIECE_VALUES[target.type] || 100;
                 const attackerVal = attacker ? (PIECE_VALUES[attacker.type] || 100) : 100;
                 // The victim is replaced from the bank, so the net gain is
                 // reduced by the average replacement value.
-                priority += 1000 + (victimVal - avgBank) - attackerVal * 0.1;
+                priority += 100000 + (victimVal - avgBank) - attackerVal * 0.1;
             }
 
-            // Checks priority (board-only simulation, used for ordering only)
-            const simBoard = board.clone();
-            const p = simBoard.getPiece(m.from.r, m.from.c);
-            simBoard.removePiece(m.to.r, m.to.c);
-            simBoard.removePiece(m.from.r, m.from.c);
-            simBoard.setPiece(m.to.r, m.to.c, p);
-            if (p) p.hasMoved = true;
-            if (GameRules.isKingInCheck(simBoard, oppColor)) {
-                priority += 300;
+            if (attacker && attacker.type === 'P' && m.to.r === promoRank) {
+                priority += 80000;
             }
 
-            if (p && p.type === 'P') {
+            // Check priority: make/undo on the shared board, no clone.
+            if (attacker) {
+                const captured = board.removePiece(m.to.r, m.to.c);
+                board.removePiece(m.from.r, m.from.c);
+                board.setPiece(m.to.r, m.to.c, attacker);
+                const givesCheck = GameRules.isKingInCheck(board, oppColor);
+                board.removePiece(m.to.r, m.to.c);
+                board.setPiece(m.from.r, m.from.c, attacker);
+                if (captured) board.setPiece(m.to.r, m.to.c, captured);
+                if (givesCheck) priority += 30000;
+            }
+
+            if (attacker && attacker.type === 'P') {
                 const rankProgress = color === 'white' ? (7 - m.to.r) : m.to.r;
                 priority += rankProgress * 15;
             }
 
             // Tiny random noise only in medium mode to vary play.
             if (!isHard) {
-                priority += Math.random() * 20;
+                priority += this.rand() * 20;
             }
 
             return { move: m, priority };
@@ -2365,6 +2685,93 @@ class ChessDurakAI {
 
         scoredMoves.sort((a, b) => b.priority - a.priority);
         return scoredMoves.map(sm => sm.move);
+    }
+
+    /**
+     * Two independent 32-bit FNV-style hashes over the complete search state.
+     * The deck is hashed in its current order because the draw order matters.
+     */
+    hashState(state) {
+        let h1 = 0x811c9dc5;
+        let h2 = 0x9e3779b9;
+
+        const mix = (value) => {
+            h1 = Math.imul(h1 ^ value, 16777619);
+            h2 = Math.imul(h2 ^ value, 2246822519);
+        };
+
+        const grid = state.board.grid;
+        for (let r = 0; r < 8; r++) {
+            const row = grid[r];
+            for (let c = 0; c < 8; c++) {
+                const piece = row[c];
+                if (!piece) continue;
+                mix(1 + r * 8 + c);
+                mix(TYPE_CODES[piece.type] || 7);
+                mix(COLOR_CODES[piece.color] || 3);
+                mix(SUIT_CODES[piece.suit] || 0);
+                mix(SQUARE_CODES[piece.squareColor] || 0);
+                mix(piece.hasMoved ? 1 : 0);
+            }
+        }
+
+        mix(0xff);
+        mix(state.turn === 'white' ? 1 : 2);
+        mix(STATUS_CODES[state.status] || 0);
+        mix(state.suitsReset ? 1 : 0);
+        mix(state.suitsResolved ? 1 : 0);
+        mix(state.pendingSuitOffer ? 1 : 0);
+        mix(state.winner === 'white' ? 1 : state.winner === 'black' ? 2 : state.winner === 'draw' ? 3 : 0);
+
+        for (let i = 0; i < state.deck.length; i++) {
+            const card = state.deck[i];
+            mix(2);
+            mix(TYPE_CODES[card.type] || 7);
+            mix(SUIT_CODES[card.suit] || 0);
+            mix(SQUARE_CODES[card.squareColor] || 0);
+        }
+
+        mix(0xee);
+        const whiteReserve = state.whiteReserve;
+        for (let i = 0; i < whiteReserve.length; i++) {
+            const piece = whiteReserve[i];
+            mix(3);
+            mix(TYPE_CODES[piece.type] || 7);
+            mix(SUIT_CODES[piece.suit] || 0);
+            mix(SQUARE_CODES[piece.squareColor] || 0);
+        }
+        mix(4);
+        const blackReserve = state.blackReserve;
+        for (let i = 0; i < blackReserve.length; i++) {
+            const piece = blackReserve[i];
+            mix(5);
+            mix(TYPE_CODES[piece.type] || 7);
+            mix(SUIT_CODES[piece.suit] || 0);
+            mix(SQUARE_CODES[piece.squareColor] || 0);
+        }
+
+        mix(6);
+        for (let i = 0; i < state.delayedSpawns.length; i++) {
+            const delayed = state.delayedSpawns[i];
+            mix(7);
+            mix(delayed.player === 'white' ? 1 : 2);
+            mix(TYPE_CODES[delayed.piece.type] || 7);
+            mix(SUIT_CODES[delayed.piece.suit] || 0);
+            mix(SQUARE_CODES[delayed.piece.squareColor] || 0);
+        }
+
+        return h1.toString(36) + ':' + h2.toString(36);
+    }
+
+    storeTT(key, depth, score, bound, bestMove, ply) {
+        const existing = this.tt.get(key);
+        if (existing && existing.depth > depth) return;
+
+        if (this.tt.size >= TT_MAX_ENTRIES) {
+            const oldest = this.tt.keys().next().value;
+            if (oldest !== undefined) this.tt.delete(oldest);
+        }
+        this.tt.set(key, { depth, score, bound, bestMove, ply });
     }
 
     /**
@@ -2407,6 +2814,18 @@ class ChessDurakAI {
         };
     }
 
+    /**
+     * Yields to the event loop between root moves. Browsers use a zero-delay
+     * timer; Node uses setImmediate, which avoids the 15 ms timer clamp of the
+     * benchmark environment.
+     */
+    yieldToEventLoop() {
+        if (typeof setImmediate === 'function') {
+            return new Promise(resolve => setImmediate(resolve));
+        }
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
     timeUp() {
         if (!this.searchDeadline) return false;
         if (this.searchAborted) return true;
@@ -2419,97 +2838,241 @@ class ChessDurakAI {
         return false;
     }
 
-    minimax(state, depth, alpha, beta, myColor, opponentColor, isHard, ply) {
+    minimax(state, depth, alpha, beta, myColor, opponentColor, isHard, ply, prefetchedMoves = null, extensions = 0) {
+        this._searchNodes++;
+        if (ply > this._maxPly) this._maxPly = ply;
+
+        if (state.status === 'checkmate') {
+            return state.winner === myColor ? MATE - ply : -MATE + ply;
+        }
+        // A threefold repetition is a draw for search purposes: never treat it
+        // as a material win.
+        if (state.status === 'stalemate' || state.status === 'repetition') return 0;
+
+        if (depth <= 0 || this.timeUp()) {
+            return this.quiesce(
+                state, alpha, beta, myColor, opponentColor,
+                isHard, ply, 0, prefetchedMoves
+            );
+        }
+
         const currentColor = state.turn;
         const isMaximizing = currentColor === myColor;
-        const legalMoves = GameRules.getAllLegalMoves(state.board, currentColor);
+
+        // Transposition table probe.
+        const ttKey = this.useTT ? this.hashState(state) : null;
+        const entry = this.useTT ? this.tt.get(ttKey) : null;
+        let ttMove = null;
+        if (entry) {
+            ttMove = entry.bestMove;
+            if (entry.depth >= depth) {
+                let score = entry.score;
+                if (score > MATE_THRESHOLD || score < -MATE_THRESHOLD) {
+                    score += entry.ply - ply;
+                }
+                if (entry.bound === 'exact') return score;
+                if (entry.bound === 'lower') {
+                    if (score >= beta) return score;
+                    if (score > alpha) alpha = score;
+                } else if (entry.bound === 'upper') {
+                    if (score <= alpha) return score;
+                    if (score < beta) beta = score;
+                }
+            }
+        }
+
+        const alphaOrig = alpha;
+        const betaOrig = beta;
+        const legalMoves = prefetchedMoves ||
+            GameRules.getAllLegalMoves(state.board, currentColor);
 
         if (legalMoves.length === 0) {
+            // Fallback for manually assembled states whose status was not
+            // updated by applyMoveCore().
             if (state.status === 'checkmate') {
-                return state.winner === myColor
-                    ? MATE - ply
-                    : -MATE + ply;
+                return state.winner === myColor ? MATE - ply : -MATE + ply;
             }
             if (state.status === 'stalemate') return 0;
-            // Safety for manually assembled states
             return GameRules.isKingInCheck(state.board, currentColor)
                 ? (isMaximizing ? -MATE + ply : MATE - ply)
                 : 0;
         }
 
-        if (depth === 0 || this.timeUp()) {
-            return this.evaluateState(state, myColor, opponentColor, isHard);
-        }
+        const orderedMoves = this.orderMoves(
+            state, legalMoves, currentColor, isHard, ply, ttMove
+        );
 
-        const orderedMoves = isHard
-            ? this.orderMoves(state, legalMoves, currentColor, true)
-            : legalMoves;
+        let bestEval = isMaximizing ? -Infinity : Infinity;
+        let bestMove = null;
 
-        if (isMaximizing) {
-            let maxEval = -Infinity;
-            for (const move of orderedMoves) {
-                if (this.timeUp()) {
-                    return this.evaluateState(state, myColor, opponentColor, isHard);
-                }
-
-                const next = state.cloneState();
-                const promotionChoice = this.getPromotionChoice(next, move, currentColor);
-                next.applyMoveCore(
-                    move.from.r, move.from.c,
-                    move.to.r, move.to.c,
-                    promotionChoice
-                );
-
-                let evaluation;
-                if (next.status === 'checkmate') {
-                    evaluation = next.winner === myColor ? MATE - (ply + 1) : -MATE + (ply + 1);
-                } else if (next.status === 'stalemate') {
-                    evaluation = 0;
-                } else {
-                    evaluation = this.minimax(
-                        next, depth - 1, alpha, beta,
-                        myColor, opponentColor, isHard, ply + 1
-                    );
-                }
-
-                maxEval = Math.max(maxEval, evaluation);
-                alpha = Math.max(alpha, evaluation);
-                if (beta <= alpha) break;
-            }
-            return maxEval;
-        }
-
-        let minEval = Infinity;
         for (const move of orderedMoves) {
             if (this.timeUp()) {
+                // The root discards an aborted iteration, so the value here is
+                // never used for the final move.
                 return this.evaluateState(state, myColor, opponentColor, isHard);
             }
 
             const next = state.cloneState();
             const promotionChoice = this.getPromotionChoice(next, move, currentColor);
-            next.applyMoveCore(
+            const core = next.applyMoveCore(
                 move.from.r, move.from.c,
                 move.to.r, move.to.c,
-                promotionChoice
-            );
+                promotionChoice,
+                { trackRepetition: true });
 
             let evaluation;
             if (next.status === 'checkmate') {
                 evaluation = next.winner === myColor ? MATE - (ply + 1) : -MATE + (ply + 1);
-            } else if (next.status === 'stalemate') {
+            } else if (next.status === 'stalemate' || next.status === 'repetition') {
                 evaluation = 0;
             } else {
+                // Check and promotion extensions, capped per line.
+                let extension = 0;
+                let nextExtensions = extensions;
+                if (extensions < MAX_EXTENSIONS) {
+                    if (core.isPromotion) extension++;
+                    if (core.opponentInCheck && extensions + extension < MAX_EXTENSIONS) {
+                        extension++;
+                    }
+                    nextExtensions = extensions + extension;
+                }
+
                 evaluation = this.minimax(
-                    next, depth - 1, alpha, beta,
-                    myColor, opponentColor, isHard, ply + 1
+                    next, depth - 1 + extension, alpha, beta,
+                    myColor, opponentColor, isHard, ply + 1,
+                    core.opponentMoves, nextExtensions
                 );
             }
 
-            minEval = Math.min(minEval, evaluation);
-            beta = Math.min(beta, evaluation);
-            if (beta <= alpha) break;
+            if (isMaximizing) {
+                if (evaluation > bestEval) {
+                    bestEval = evaluation;
+                    bestMove = move;
+                }
+                if (bestEval > alpha) alpha = bestEval;
+                if (alpha >= beta) {
+                    this.recordCutoff(ply, move, depth, currentColor);
+                    break;
+                }
+            } else {
+                if (evaluation < bestEval) {
+                    bestEval = evaluation;
+                    bestMove = move;
+                }
+                if (bestEval < beta) beta = bestEval;
+                if (beta <= alpha) {
+                    this.recordCutoff(ply, move, depth, currentColor);
+                    break;
+                }
+            }
         }
-        return minEval;
+
+        if (!this.searchAborted && this.useTT) {
+            let bound = 'exact';
+            if (bestEval <= alphaOrig) bound = 'upper';
+            else if (bestEval >= betaOrig) bound = 'lower';
+            this.storeTT(ttKey, depth, bestEval, bound, bestMove, ply);
+        }
+
+        return bestEval;
+    }
+
+    /**
+     * Quiescence search: resolves forced captures and promotions (and every
+     * legal reply while in check) before evaluating a leaf.
+     */
+    quiesce(state, alpha, beta, myColor, opponentColor, isHard, ply, qdepth, prefetchedMoves = null) {
+        this._searchNodes++;
+        if (ply > this._maxPly) this._maxPly = ply;
+
+        if (state.status === 'checkmate') {
+            return state.winner === myColor ? MATE - ply : -MATE + ply;
+        }
+        if (state.status === 'stalemate' || state.status === 'repetition') return 0;
+
+        const standPat = this.evaluateState(state, myColor, opponentColor, isHard);
+        const maximizing = state.turn === myColor;
+        const inCheck = GameRules.isKingInCheck(state.board, state.turn);
+
+        // A side in check cannot "stand pat".
+        if (!inCheck) {
+            if (maximizing) {
+                if (standPat >= beta) return beta;
+                if (standPat > alpha) alpha = standPat;
+            } else {
+                if (standPat <= alpha) return alpha;
+                if (standPat < beta) beta = standPat;
+            }
+        }
+
+        const maxQDepth = isHard ? MAX_QDEPTH_HARD : MAX_QDEPTH_MEDIUM;
+        if (qdepth >= maxQDepth || this.timeUp()) return standPat;
+
+        const currentColor = state.turn;
+        const legalMoves = prefetchedMoves ||
+            GameRules.getAllLegalMoves(state.board, currentColor);
+
+        if (legalMoves.length === 0) {
+            return inCheck
+                ? (maximizing ? -MATE + ply : MATE - ply)
+                : 0;
+        }
+
+        // In check every legal answer is a forced continuation; otherwise
+        // only captures and promotions are considered.
+        const candidates = inCheck
+            ? legalMoves
+            : legalMoves.filter(move => move.isCapture ||
+                this.isPromotionMove(state, move, currentColor));
+
+        if (candidates.length === 0) return standPat;
+
+        const ordered = this.orderMoves(state, candidates, currentColor, isHard, ply, null);
+        let best = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
+
+        for (const move of ordered) {
+            if (this.timeUp()) return best;
+
+            const victim = state.board.getPiece(move.to.r, move.to.c);
+
+            // Delta pruning: a capture that cannot improve the current alpha
+            // is skipped. Only safe for the side that maximizes the score.
+            if (maximizing && !inCheck && victim) {
+                const gain = PIECE_VALUES[victim.type] || 0;
+                if (standPat + gain + Q_DELTA < alpha) continue;
+            }
+
+            const next = state.cloneState();
+            const promotionChoice = this.getPromotionChoice(next, move, currentColor);
+            const core = next.applyMoveCore(
+                move.from.r, move.from.c,
+                move.to.r, move.to.c,
+                promotionChoice,
+                { trackRepetition: true });
+
+            let score;
+            if (next.status === 'checkmate') {
+                score = next.winner === myColor ? MATE - (ply + 1) : -MATE + (ply + 1);
+            } else if (next.status === 'stalemate' || next.status === 'repetition') {
+                score = 0;
+            } else {
+                score = this.quiesce(
+                    next, alpha, beta, myColor, opponentColor,
+                    isHard, ply + 1, qdepth + 1, core.opponentMoves
+                );
+            }
+
+            if (maximizing) {
+                if (score > best) best = score;
+                if (best > alpha) alpha = best;
+            } else {
+                if (score < best) best = score;
+                if (best < beta) beta = best;
+            }
+            if (alpha >= beta) break;
+        }
+
+        return best;
     }
 
     /**
@@ -2529,6 +3092,12 @@ class ChessDurakAI {
             reserveValue(state.whiteReserve) - reserveValue(state.blackReserve)
         );
 
+        // A full reserve blocks reinforcements behind the base rank.
+        const overcrowding = list => Math.max(0, list.length - 3) * 15;
+        score -= sign * (
+            overcrowding(state.whiteReserve) - overcrowding(state.blackReserve)
+        );
+
         const delayedValue = player => state.delayedSpawns
             .filter(d => d.player === player)
             .reduce((sum, d) => sum + (PIECE_VALUES[d.piece.type] || 0), 0);
@@ -2541,85 +3110,264 @@ class ChessDurakAI {
     }
 
     /**
-     * Board heuristic evaluation function:
-     * - In Medium: basic piece values, center control, check bonus.
-     * - In Hard (Analytical): Durak suit-matching attack/defense analysis, piece safety, king threats.
+     * Basic king safety: distance from the home rank, centre exposure, a small
+     * shield bonus and an open-file penalty. Deliberately cheap so it can run
+     * at every leaf.
+     */
+    kingSafetyScore(board, color, kingPos) {
+        if (!kingPos) return 0;
+        const homeRow = color === 'white' ? 7 : 0;
+        let score = 0;
+
+        score -= Math.abs(kingPos.r - homeRow) * 4;
+        if (Math.abs(kingPos.c - 3.5) < 1.5) score -= 8;
+
+        let shield = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+                if (dr === 0 && dc === 0) continue;
+                const piece = board.getPiece(kingPos.r + dr, kingPos.c + dc);
+                if (piece && piece.color === color && piece.type !== 'K') shield++;
+            }
+        }
+        score += Math.min(shield, 4) * 10;
+
+        let ownPawnOnFile = false;
+        for (let r = 0; r < 8; r++) {
+            const piece = board.getPiece(r, kingPos.c);
+            if (piece && piece.color === color && piece.type === 'P') {
+                ownPawnOnFile = true;
+                break;
+            }
+        }
+        if (!ownPawnOnFile) score -= 12;
+
+        return score;
+    }
+
+    /**
+     * Pawn structure: doubled and isolated pawns are a small liability, a
+     * passed pawn is an asset (pawns often promote in this game).
+     */
+    pawnStructureScore(ownPieces, color, enemyPieces) {
+        const ownPawns = ownPieces.filter(p => p.piece.type === 'P');
+        const enemyPawns = enemyPieces.filter(p => p.piece.type === 'P');
+        if (ownPawns.length === 0) return 0;
+
+        const files = new Array(8).fill(0);
+        for (const pawn of ownPawns) files[pawn.c]++;
+
+        let score = 0;
+        for (let file = 0; file < 8; file++) {
+            if (files[file] > 1) score -= (files[file] - 1) * 10;
+        }
+
+        const direction = color === 'white' ? -1 : 1;
+        for (const pawn of ownPawns) {
+            const isolated = files[pawn.c - 1] === undefined || files[pawn.c - 1] === 0;
+            const isolatedRight = files[pawn.c + 1] === undefined || files[pawn.c + 1] === 0;
+            if (isolated && isolatedRight) score -= 6;
+
+            let blocked = false;
+            for (const enemy of enemyPawns) {
+                if (Math.abs(enemy.c - pawn.c) > 1) continue;
+                const ahead = direction < 0
+                    ? enemy.r < pawn.r
+                    : enemy.r > pawn.r;
+                if (ahead) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if (!blocked) score += 12;
+        }
+
+        return score;
+    }
+
+    /**
+     * Board heuristic evaluation function.
+     *
+     * Both levels get material, centre control, pawn advancement and basic
+     * king safety. Hard additionally gets a single-pass threat matrix,
+     * suit-control terms, mobility and pawn structure.
      */
     evaluateBoard(board, myColor, opponentColor, isHard) {
         let score = 0;
 
-        // Collect pieces for Durak suit threat evaluation
         const myPieces = [];
         const oppPieces = [];
+        let myKing = null;
+        let oppKing = null;
+
+        const grid = board.grid;
 
         for (let r = 0; r < 8; r++) {
+            const row = grid[r];
             for (let c = 0; c < 8; c++) {
-                const piece = board.getPiece(r, c);
+                const piece = row[c];
                 if (!piece) continue;
 
                 const val = PIECE_VALUES[piece.type] || 0;
-                const centerDist = Math.abs(3.5 - r) + Math.abs(3.5 - c);
-                const positionalBonus = (7 - centerDist) * 5;
+                const positionalBonus = CENTER_BONUS[r * 8 + c];
 
                 let advanceBonus = 0;
                 if (piece.type === 'P') {
-                    const rankProgress = piece.color === 'white' ? (7 - r) : r;
-                    advanceBonus = rankProgress * 18;
+                    advanceBonus = piece.color === 'white'
+                        ? WHITE_PAWN_ADVANCE[r]
+                        : BLACK_PAWN_ADVANCE[r];
                 }
 
                 const totalVal = val + positionalBonus + advanceBonus;
 
                 if (piece.color === myColor) {
                     score += totalVal;
-                    if (isHard) myPieces.push({ piece, r, c, val });
+                    myPieces.push({ piece, r, c, val });
                 } else {
                     score -= totalVal;
-                    if (isHard) oppPieces.push({ piece, r, c, val });
+                    oppPieces.push({ piece, r, c, val });
+                }
+
+                if (piece.type === 'K') {
+                    if (piece.color === myColor) myKing = { r, c };
+                    else oppKing = { r, c };
                 }
             }
         }
 
-        // Checks bonus
-        if (GameRules.isKingInCheck(board, opponentColor)) score += 150;
-        if (GameRules.isKingInCheck(board, myColor)) score -= 150;
+        // King safety (both levels). The king value itself cancels out; the
+        // separate term only models structure and exposure.
+        score += this.kingSafetyScore(board, myColor, myKing);
+        score -= this.kingSafetyScore(board, opponentColor, oppKing);
 
-        // ANALYTICAL MODE (Hard): Durak suit-matching tactical threat matrix
-        if (isHard) {
-            // 1. Check if my pieces are threatened by enemy pieces (matching suit or enemy King)
-            for (const oppP of oppPieces) {
-                const oppMoves = GameRules.getPseudoLegalMoves(board, oppP.r, oppP.c);
-                for (const m of oppMoves) {
-                    if (m.isCapture) {
-                        const threatened = myPieces.find(p => p.r === m.r && p.c === m.c);
-                        if (threatened && threatened.piece.type !== 'K') {
-                            score -= (threatened.val * 0.65);
+        // Checks bonus. In Chess Durak every piece can check the king, so the
+        // weight stays modest. The king positions are already known from the
+        // collection pass above, so no extra findKing() scan is needed.
+        if (oppKing && GameRules.isSquareAttackedBy(board, oppKing.r, oppKing.c, myColor)) {
+            score += 150;
+        }
+        if (myKing && GameRules.isSquareAttackedBy(board, myKing.r, myKing.c, opponentColor)) {
+            score -= 150;
+        }
+
+        if (!isHard) return score;
+
+        // ANALYTICAL MODE (Hard): one pass per side over pseudo-legal moves.
+        const myAt = new Array(64).fill(-1);
+        for (let i = 0; i < myPieces.length; i++) {
+            const piece = myPieces[i];
+            myAt[piece.r * 8 + piece.c] = i;
+        }
+        const oppAt = new Array(64).fill(-1);
+        for (let i = 0; i < oppPieces.length; i++) {
+            const piece = oppPieces[i];
+            oppAt[piece.r * 8 + piece.c] = i;
+        }
+
+        let myKingPressure = 0;
+        let enemyMobility = 0;
+        const moveR = this._moveR;
+        const moveC = this._moveC;
+        const moveCap = this._moveCap;
+
+        // Enemy threats against my material and my king. Moves are written into
+        // reusable buffers: no per-piece closure and no per-move objects.
+        for (const oppP of oppPieces) {
+            const attackerWeight = 320 / (oppP.val + 320);
+            const nMoves = GameRules.fillPseudoLegalMoves(
+                board, oppP.r, oppP.c, moveR, moveC, moveCap
+            );
+            enemyMobility += nMoves;
+            for (let i = 0; i < nMoves; i++) {
+                const mr = moveR[i];
+                const mc = moveC[i];
+                if (moveCap[i] === 1) {
+                    const targetIndex = myAt[mr * 8 + mc];
+                    if (targetIndex !== -1) {
+                        const threatened = myPieces[targetIndex];
+                        if (threatened.piece.type !== 'K') {
+                            // A cheap attacker makes a threat more dangerous.
+                            score -= threatened.val * 0.65 * (0.6 + 0.4 * attackerWeight);
                         }
                     }
                 }
-            }
-
-            // 2. Check if enemy pieces are vulnerable to my attacks (matching suit or my King)
-            for (const myP of myPieces) {
-                const myMoves = GameRules.getPseudoLegalMoves(board, myP.r, myP.c);
-                for (const m of myMoves) {
-                    if (m.isCapture) {
-                        const targetOpp = oppPieces.find(p => p.r === m.r && p.c === m.c);
-                        if (targetOpp && targetOpp.piece.type !== 'K') {
-                            score += (targetOpp.val * 0.6);
-                        }
-                    }
-                }
-            }
-
-            // 3. Distance & pressure on enemy King
-            const oppKingPos = board.findKing(opponentColor);
-            if (oppKingPos) {
-                for (const myP of myPieces) {
-                    const dist = Math.abs(myP.r - oppKingPos.r) + Math.abs(myP.c - oppKingPos.c);
-                    score += (8 - dist) * 4;
+                if (myKing) {
+                    const dist = Math.abs(mr - myKing.r) + Math.abs(mc - myKing.c);
+                    if (dist <= 2) myKingPressure += (3 - dist);
                 }
             }
         }
+        score -= myKingPressure * 5;
+
+        let myMobility = 0;
+        let suitTargets = 0;
+        const mySuits = new Set();
+        const suitSets = { spades: false, clubs: false, hearts: false, diamonds: false };
+
+        // My attacks, suit coverage and pressure on the enemy king.
+        for (const myP of myPieces) {
+            if (myP.piece.suit) mySuits.add(myP.piece.suit);
+            let hasCapture = false;
+            const nMoves = GameRules.fillPseudoLegalMoves(
+                board, myP.r, myP.c, moveR, moveC, moveCap
+            );
+            myMobility += nMoves;
+            for (let i = 0; i < nMoves; i++) {
+                const mr = moveR[i];
+                const mc = moveC[i];
+                if (moveCap[i] === 1) {
+                    const targetIndex = oppAt[mr * 8 + mc];
+                    if (targetIndex !== -1) {
+                        hasCapture = true;
+                        const targetOpp = oppPieces[targetIndex];
+                        if (targetOpp.piece.type !== 'K') {
+                            score += targetOpp.val * 0.6;
+                        }
+                    }
+                }
+                if (oppKing) {
+                    const dist = Math.abs(mr - oppKing.r) + Math.abs(mc - oppKing.c);
+                    if (dist <= 2) score += (3 - dist) * 3;
+                }
+            }
+
+            if (myP.piece.type !== 'K') {
+                if (hasCapture) {
+                    score += 10;
+                    if (myP.piece.suit && myP.piece.suit in suitSets) {
+                        suitSets[myP.piece.suit] = true;
+                    }
+                } else if (myP.piece.suit) {
+                    // Dead weight: a suited piece with no target of its suit.
+                    score -= 8;
+                }
+            }
+        }
+
+        for (const suit of Object.keys(suitSets)) {
+            if (suitSets[suit]) suitTargets++;
+        }
+        score += suitTargets * 10;
+        score += mySuits.size * 4;
+
+        // Opponent suit monopoly that I cannot answer.
+        const oppSuits = new Set();
+        for (const oppP of oppPieces) {
+            if (oppP.piece.suit) oppSuits.add(oppP.piece.suit);
+        }
+        let unmatched = 0;
+        for (const suit of oppSuits) {
+            if (!mySuits.has(suit)) unmatched++;
+        }
+        score -= unmatched * 8;
+
+        // Mobility difference, capped so it never dominates material.
+        const mobility = (myMobility - enemyMobility) * 2;
+        score += Math.max(-60, Math.min(60, mobility));
+
+        // Pawn structure.
+        score += this.pawnStructureScore(myPieces, myColor, oppPieces);
+        score -= this.pawnStructureScore(oppPieces, opponentColor, myPieces);
 
         return score;
     }
